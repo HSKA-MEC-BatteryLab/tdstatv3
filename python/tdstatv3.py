@@ -13,9 +13,6 @@ import collections
 import datetime
 # import usb.core, usb.util
 import os.path
-# import PotentiostatCV        	#idea to split off CV code into separate file for readability
-# import PotentiostatCD			#idea to split off CD code into separate file for readability
-# import PotentiostatRate		#idea to split off Rate code into separate file for readability
 import platform
 import sys
 import time
@@ -27,10 +24,10 @@ import pyqtgraph
 import scipy.integrate
 import usb
 from PyQt5 import QtWidgets, QtCore, QtGui
+import logging
 
 # variable initializations
-os.environ['PYUSB_DEBUG'] = 'debug'
-#os.environ['LIBUSB_DEBUG'] = 4
+usb_debug_flag = True
 usb_vid = "0xa0a0"  # Default USB vendor ID
 usb_pid = "0x0002"  # Default USB product ID
 current_range_list = ["20 mA", u"200 µA", u"2 µA"]
@@ -77,6 +74,40 @@ if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
 #related to scaling, but not found, functions without this
 # if hasattr(QtCore, 'AA_UseHighDpiPixmaps'):
 #	PyQt5.QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
+
+# class LoggerWriter:
+# class StreamToLogger(object):
+#      def __init__(self, logfct):
+#          self.logfct = logfct
+#          self.buf = []
+#
+#      def write(self, msg):
+#          if msg.endswith('\n'):
+#              self.buf.append(msg.removesuffix('\n'))
+#              self.logfct(''.join(self.buf))
+#              self.buf = []
+#          else:
+#              self.buf.append(msg)
+#
+#      def flush(self):
+#          pass
+
+class StreamToLogger(object):
+    """
+    Fake file-like stream object that redirects writes to a logger instance.
+    """
+    def __init__(self, logger, log_level=logging.DEBUG):
+       self.logger = logger
+       self.log_level = log_level
+       self.linebuf = ''
+
+    def write(self, buf):
+       for line in buf.rstrip().splitlines():
+          self.logger.log(self.log_level, line.rstrip())
+
+    def flush(self):
+        pass
 
 class AverageBuffer:
     """Collect samples and compute an average as soon as a sufficient number of samples is added."""
@@ -1819,6 +1850,28 @@ def periodic_update():  # A state machine is used to determine which functions n
         rate_update()
     elif state == States.Stationary_Graph:
         read_potential_current()
+
+if usb_debug_flag: # TODO: enable debugging of USB
+    #Depending on global flag, toggles debugging of USB features. Setting this up to help diagnose crashes during longer CV tests.
+    file_path = os.getcwd()
+    os.environ['PYUSB_DEBUG'] = 'debug' #no output currently?
+    pyusb_path = 'pyusb_log.log'
+    #os.environ['PYUSB_LOG_FILENAME'] = 'pyusb_path'
+    os.environ['LIBUSB_DEBUG'] = '3'    #outputs currently to console - change to write to file
+    log_path = os.path.join(file_path, 'cv_log.log')
+    logging.basicConfig(
+         level=logging.DEBUG,
+         format='%(asctime)s:%(levelname)s:%(name)s:%(message)s',
+         filename=log_path,
+         filemode='a'
+    )
+    stdout_logger = logging.getLogger('STDOUT')
+    sl = StreamToLogger(stdout_logger, logging.DEBUG)
+    sys.stdout = sl
+
+    stderr_logger = logging.getLogger('STDERR')
+    sl = StreamToLogger(stderr_logger, logging.ERROR)
+    sys.stderr = sl
 
 
 timer = QtCore.QTimer()
