@@ -11,31 +11,34 @@
 
 import collections
 import datetime
+import logging
 # import usb.core, usb.util
 import os.path
 import platform
 import sys
 import time
 import timeit
+
 # from pyqtgraph.Qt import QtCore, QtGui
 import PyQt5
 import numpy
 import pyqtgraph
+import pyqtgraph.exporters
 import scipy.integrate
 import usb
 from PyQt5 import QtWidgets, QtCore, QtGui
-import logging
 
 # variable initializations
-usb_debug_flag = True
+usb_debug_flag = False
 usb_vid = "0xa0a0"  # Default USB vendor ID
 usb_pid = "0x0002"  # Default USB product ID
 current_range_list = ["20 mA", u"200 µA", u"2 µA"]
-shunt_calibration = [1., 1., 1.]  # Fine adjustment for shunt resistors, containing values of R1/10ohm, R2/1kohm, R3/100kohm (can also be adjusted in the GUI)
+shunt_calibration = [1., 1.,
+                     1.]  # Fine adjustment for shunt resistors, containing values of R1/10ohm, R2/1kohm, R3/100kohm (can also be adjusted in the GUI)
 currentrange = 0  # Default current range (expressed as index in current_range_list)
 units_list = ["Potential (V)", "Current (mA)", "DAC Code"]
 dev = None  # Global object which is reserved for the USB device
-usb_device_list = [] #Creates a list to hold all devices found in scan
+usb_device_list = []  # Creates a list to hold all devices found in scan
 current_offset = 0.  # Current offset in DAC counts
 potential_offset = 0.  # Potential offset in DAC counts
 potential = 0.  # Measured potential in V
@@ -57,6 +60,7 @@ overcounter, undercounter, skipcounter = 0, 0, 0  # Global counters used for aut
 time_of_last_adcread = 0.
 adcread_interval = 0.09  # ADC sampling interval (in seconds)
 logging_enabled = False  # Enable logging of potential and current in idle mode (can be adjusted in the GUI)
+pen_color = ['y', 'r', 'c', 'm', 'g', 'k', 'w']  # graph line color
 
 if platform.system() != "Windows":
     # On Linux/OSX, use the Qt timer
@@ -67,47 +71,39 @@ else:
     busyloop_interval = adcread_interval
     qt_timer_period = 0
 
-#enables scaling for high resolution monitors, prevents window from being squished together
+# enables scaling for high resolution monitors, prevents window from being squished together
 if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
     PyQt5.QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
 
-#related to scaling, but not found, functions without this
+
+# related to scaling, but not found, functions without this
 # if hasattr(QtCore, 'AA_UseHighDpiPixmaps'):
 #	PyQt5.QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
 
 
-# class LoggerWriter:
-# class StreamToLogger(object):
-#      def __init__(self, logfct):
-#          self.logfct = logfct
-#          self.buf = []
-#
-#      def write(self, msg):
-#          if msg.endswith('\n'):
-#              self.buf.append(msg.removesuffix('\n'))
-#              self.logfct(''.join(self.buf))
-#              self.buf = []
-#          else:
-#              self.buf.append(msg)
-#
-#      def flush(self):
-#          pass
+def GraphAutoExport(plot, filename):
+    exporter = pyqtgraph.exporters.ImageExporter(plot.plotItem)
+    base, ext = os.path.splitext(filename)
+    exporter.export(base + '.png')
+
 
 class StreamToLogger(object):
     """
     Fake file-like stream object that redirects writes to a logger instance.
     """
+
     def __init__(self, logger, log_level=logging.DEBUG):
-       self.logger = logger
-       self.log_level = log_level
-       self.linebuf = ''
+        self.logger = logger
+        self.log_level = log_level
+        self.linebuf = ''
 
     def write(self, buf):
-       for line in buf.rstrip().splitlines():
-          self.logger.log(self.log_level, line.rstrip())
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.log_level, line.rstrip())
 
     def flush(self):
         pass
+
 
 class AverageBuffer:
     """Collect samples and compute an average as soon as a sufficient number of samples is added."""
@@ -194,24 +190,6 @@ def dac_bytes_to_decimal(dac_bytes):
     return code - 2 ** 19
 
 
-def usb_scan():
-    """"Scan the USB and add them to a list for connecting to under USB Interface in the GUI"""
-    usb_vid_string = str(usb_vid)
-    usb_pid_string = str(usb_pid)
-    usb_device_list.clear()
-    hardware_usb_device_list_dropdown.clear()
-    for scanned_device in usb.core.find(idVendor=int(usb_vid_string, 0), idProduct=int(usb_pid_string, 0), find_all=True):
-        try:
-            usb_device_list.append(scanned_device.serial_number)
-        except ValueError:
-            pass
-
-    if len(usb_device_list) == 0:
-        usb_device_list.append('No Devices Found')
-    usb_device_list.sort()
-    hardware_usb_device_list_dropdown.addItems(usb_device_list)
-
-
 def cv_sweep(time_elapsed, ustart, ustop, ubound, lbound, scanrate, n):
     """Generate the potential profile for a cyclic voltammetry sweep.
 
@@ -234,8 +212,10 @@ def cv_sweep(time_elapsed, ustart, ustop, ubound, lbound, scanrate, n):
         except TypeError:
             return None  # If the result of the inverted function is None, it cannot be inverted, so return None
     srt_0 = ubound - ustart  # Potential difference to traverse in the initial stage (before potential reaches upper bound)
-    srt_1 = (ubound - lbound) * 2. * n  # Potential difference to traverse in the "cyclic stage" (repeated scans from upper to lower bound and back)
-    srt_2 = abs(ustop - ubound)  # Potential difference to traverse in the final stage (from upper bound to stop potential)
+    srt_1 = (
+                    ubound - lbound) * 2. * n  # Potential difference to traverse in the "cyclic stage" (repeated scans from upper to lower bound and back)
+    srt_2 = abs(
+        ustop - ubound)  # Potential difference to traverse in the final stage (from upper bound to stop potential)
     srtime = scanrate * time_elapsed  # Linear potential sweep
     cv_duration = (srt_0 + srt_1 + srt_2) / scanrate
     if srtime < srt_0:  # Initial stage
@@ -243,7 +223,8 @@ def cv_sweep(time_elapsed, ustart, ustop, ubound, lbound, scanrate, n):
         return ustart + srtime
     elif srtime < srt_0 + srt_1:  # Cyclic stage
         srtime = srtime - srt_0
-        cv_cycle = int((srtime/((ubound-lbound)*2))+1) # uses the voltage covered so far, divided by the range, to figure out what cycle we're in. Because we want an int, and this rounds down, we add 1 to even it up
+        cv_cycle = int((srtime / ((
+                                          ubound - lbound) * 2)) + 1)  # uses the voltage covered so far, divided by the range, to figure out what cycle we're in. Because we want an int, and this rounds down, we add 1 to even it up
         return lbound + abs((srtime) % (2 * (ubound - lbound)) - (ubound - lbound))
     elif srtime < srt_0 + srt_1 + srt_2:  # Final stage
         srtime = srtime - srt_0 - srt_1
@@ -350,6 +331,25 @@ def log_message(message):
     statustext.ensureCursorVisible()
 
 
+def usb_scan():
+    """"Scan the USB and add them to a list for connecting to under USB Interface in the GUI"""
+    usb_vid_string = str(usb_vid)
+    usb_pid_string = str(usb_pid)
+    usb_device_list.clear()
+    hardware_usb_device_list_dropdown.clear()
+    for scanned_device in usb.core.find(idVendor=int(usb_vid_string, 0), idProduct=int(usb_pid_string, 0),
+                                        find_all=True):
+        try:
+            usb_device_list.append(scanned_device.serial_number)
+        except ValueError:
+            pass
+
+    if len(usb_device_list) == 0:
+        usb_device_list.append('No Devices Found')
+    usb_device_list.sort()
+    hardware_usb_device_list_dropdown.addItems(usb_device_list)
+
+
 def connect_disconnect_usb():
     """Toggle the USB device between connected and disconnected states."""
     global dev, state
@@ -366,21 +366,26 @@ def connect_disconnect_usb():
     # Otherwise, try to connect
     usb_vid_string = str(usb_vid)
     usb_pid_string = str(usb_pid)
-    serial_index = hardware_usb_device_list_dropdown.currentIndex() # this returns an index number -> 0,1,2,3...
+    serial_index = hardware_usb_device_list_dropdown.currentIndex()  # this returns an index number -> 0,1,2,3...
     if usb_device_list[serial_index] == 'No Devices Found':
         QtGui.QMessageBox.critical(mainwidget, "USB Device Not Found",
                                    "No USB device was found with VID %s and PID %s. Verify the vendor/product ID and check the USB connection." % (
                                        usb_vid_string, usb_pid_string))
     for dev in usb.core.find(idVendor=int(usb_vid_string, 0), idProduct=int(usb_pid_string, 0), find_all=True):
         if dev is None:
-            QtGui.QMessageBox.critical(mainwidget, "USB Device Not Found","No USB device was found with VID %s and PID %s. Verify the vendor/product ID and check the USB connection." % (usb_vid_string, usb_pid_string))
+            QtGui.QMessageBox.critical(mainwidget, "USB Device Not Found",
+                                       "No USB device was found with VID %s and PID %s. Verify the vendor/product ID and check the USB connection." % (
+                                           usb_vid_string, usb_pid_string))
         try:
-            if dev.serial_number == usb_device_list[serial_index]: #error here when lower number dev in use, and attempt access higher dev... no langid
+            if dev.serial_number == usb_device_list[
+                serial_index]:  # error here when lower number dev in use, and attempt access higher dev... no langid
                 hardware_usb_connectButton.setText("Disconnect")
                 log_message("USB Interface connected.")
+                log_message(str(type(dev)))
                 try:
                     hardware_device_info_text.setText(
-                        "Manufacturer: %s\nProduct: %s\nSerial #: %s" % (dev.manufacturer, dev.product, dev.serial_number))
+                        "Manufacturer: %s\nProduct: %s\nSerial #: %s" % (
+                            dev.manufacturer, dev.product, dev.serial_number))
                     win.setWindowTitle('USB potentiostat/galvanostat - Device: ' + dev.serial_number)
                     get_calibration()
                     set_cell_status(False)  # Cell off
@@ -392,11 +397,12 @@ def connect_disconnect_usb():
                 break
             if dev.serial_number != usb_device_list[serial_index]:
                 dev = None
-                #print('skipped')
-        except ValueError: #TODO: refine this ValueError skip if possible
-            #this section allows the device scan to bypass lower-serial-number devices that are in use
-            dev = None
-            #print('ValueError - Langid Skip')
+                # print('skipped')
+        except ValueError:  # TODO: refine this ValueError skip if possible
+            # this section allows the device scan to bypass lower-serial-number devices that are in use
+            pass
+            # dev = None
+            # print('ValueError - Langid Skip')
 
 
 def not_connected_errormessage():
@@ -420,7 +426,7 @@ def check_state(desired_states):
 def send_command(command_string, expected_response, log_msg=None):
     """Send a command string to the USB device and check the response; optionally logs a message to the message log."""
     if dev is not None:  # Make sure it's connected
-        dev.write(0x01, command_string)  # 0x01 = write address of EP1 # TODO: is this where our USB error is from?
+        dev.write(0x01, command_string)  # 0x01 = write address of EP1
         response = bytes(dev.read(0x81, 64))  # 0x81 = read address of EP1
         if response != expected_response:
             QtGui.QMessageBox.critical(mainwidget, "Unexpected Response",
@@ -795,15 +801,22 @@ def update_live_graph():
 def choose_file(file_entry_field, questionstring):
     """Open a file dialog and write the path of the selected file to a given entry field."""
     filedialog = QtGui.QFileDialog()
-    #file_entry_field.setText(filedialog.getSaveFileName(mainwidget, questionstring, "", "ASCII data (*.txt)", options=QtGui.QFileDialog.DontConfirmOverwrite))  #original code
-    tempdirectory = filedialog.getSaveFileName(mainwidget, questionstring, "", "ASCII data (*.txt)")#, options=QtGui.QFileDialog.DontConfirmOverwrite) #reenabling overwrite confirmation
-    file_entry_field.setText(tempdirectory[0]) #getSaveFileName returns a tuple, so access first element!
+    # file_entry_field.setText(filedialog.getSaveFileName(mainwidget, questionstring, "", "ASCII data (*.txt)", options=QtGui.QFileDialog.DontConfirmOverwrite))  #original code
+    tempdirectory = filedialog.getSaveFileName(mainwidget, questionstring, "",
+                                               "ASCII data (*.txt)")  # , options=QtGui.QFileDialog.DontConfirmOverwrite) #reenabling overwrite confirmation
+    file_entry_field.setText(tempdirectory[0])  # getSaveFileName returns a tuple, so access first element!
 
 
 def toggle_logging(checkbox_state):
     """Enable or disable logging of measurements to a file based on the state of a checkbox (2 means checked)."""
     global logging_enabled
     logging_enabled = (checkbox_state == 2)
+
+
+def toggle_error_logging(checkbox_state):
+    """Enable or disable error logging from STDOUT and STDERR to logfile"""
+    global usb_debug_flag
+    usb_debug_flag = (checkbox_state == 2)
 
 
 def cv_getparams():
@@ -879,13 +892,15 @@ def cv_numcycles_changed_callback():
     try:
         global cv_duration
         initialtime = float(cv_ubound_entry.text()) - float(cv_startpot_entry.text())
-        cycletime = (float(cv_ubound_entry.text()) - float(cv_lbound_entry.text())) * 2. * int(cv_numcycles_entry.text())
+        cycletime = (float(cv_ubound_entry.text()) - float(cv_lbound_entry.text())) * 2. * int(
+            cv_numcycles_entry.text())
         finaltime = abs(float(cv_stoppot_entry.text()) - float(cv_ubound_entry.text()))
-        cv_duration = (initialtime + cycletime + finaltime) / (float(cv_scanrate_entry.text())/1000)
+        cv_duration = (initialtime + cycletime + finaltime) / (float(cv_scanrate_entry.text()) / 1000)
         cv_duration_text = duration_to_text_days_hours(cv_duration)
         cv_time_calculator_text.setText(f"Duration: {cv_duration_text}\nStart: \nEst. End:\nElapsed Time: ")
     except:
         pass
+
 
 def duration_to_text_days_hours(test_duration):
     try:
@@ -896,17 +911,21 @@ def duration_to_text_days_hours(test_duration):
     except:
         pass
 
+
 def cv_start():
     """Initialize the CV measurement."""
     global cv_time_data, cv_potential_data, cv_current_data, cv_plot_curve, cv_outputfile, state, skipcounter, cv_parameters, test_start, test_end
-    if check_state([States.Idle, States.Stationary_Graph]) and cv_getparams() and cv_validate_parameters() and validate_file(cv_parameters['filename']):
+    if check_state(
+            [States.Idle, States.Stationary_Graph]) and cv_getparams() and cv_validate_parameters() and validate_file(
+        cv_parameters['filename']):
         test_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cv_duration_text = duration_to_text_days_hours(cv_duration)
         test_end = datetime.datetime.now() + datetime.timedelta(seconds=cv_duration)
         cv_end_text = test_end.strftime("%Y-%m-%d %H:%M:%S")
-        cv_time_calculator_text.setText(f"Duration: {cv_duration_text}\nStart: {test_start}\nEst. End: {cv_end_text}\nElapsed Time: ")
+        cv_time_calculator_text.setText(
+            f"Duration: {cv_duration_text}\nStart: {test_start}\nEst. End: {cv_end_text}\nElapsed Time: ")
         cv_outputfile = open(cv_parameters['filename'], 'w', 1)  # 1 means line-buffered
-        #do not change spacing below - it will change the fileheader
+        # do not change spacing below - it will change the fileheader
         cv_outputfile.write(
             f"""Device Serial:\t{dev.serial_number}
 Estimated Duration[s]:\t{cv_duration}
@@ -954,7 +973,7 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tCycle\n"""
         plot_frame.enableAutoRange()
         plot_frame.setLabel('bottom', 'Potential', units="V")
         plot_frame.setLabel('left', 'Current', units="A")
-        cv_plot_curve = plot_frame.plot(pen='y')  # Plot CV in yellow # TODO: Modify colors based on cycle
+        cv_plot_curve = plot_frame.plot(pen=pen_color[0])  # Plot first cycle CV in yellow, changes with cycle number
         log_message("CV measurement started. Saving to: %s" % cv_parameters['filename'])
         state = States.Measuring_CV
         skipcounter = 2  # Skip first two data points to suppress artifacts
@@ -978,7 +997,7 @@ def cv_update():
             cv_current_data.add_sample(1e-3 * current)  # Convert from mA to A
             if len(cv_time_data.samples) == 0 and len(
                     cv_time_data.averagebuffer) > 0:  # Check if a new average was just calculated
-                #cv_outputfile.write("%e\t%e\t%e\t%s\n" % (
+                # cv_outputfile.write("%e\t%e\t%e\t%s\n" % (
                 #    cv_time_data.averagebuffer[-1], cv_potential_data.averagebuffer[-1],
                 #    cv_current_data.averagebuffer[-1],
                 #    cv_cycle))
@@ -987,7 +1006,7 @@ def cv_update():
                     f"{cv_potential_data.averagebuffer[-1]:e}\t"
                     f"{cv_current_data.averagebuffer[-1]:e}\t"
                     f"{cv_cycle}\n"
-                    )
+                )
                 cv_plot_curve.setData(cv_potential_data.averagebuffer,
                                       cv_current_data.averagebuffer)  # Update the graph
             skipcounter = auto_current_range()  # Update the graph
@@ -1005,12 +1024,15 @@ def cv_stop(interrupted=True):
                                     cv_current_data.averagebuffer)  # Integrate current between zero crossings to produce list of inserted/extracted charges
         if interrupted:
             log_message("CV measurement interrupted. Calculated charges (in uAh): [" + ', '.join(
-                "%.2f" % value for value in charge_arr) + "]")  # Show calculated charges in the message log
+                "%.2f" % value for value in
+                charge_arr) + "]")  # Show calculated charges in the message log
         else:
             log_message("CV measurement finished. Calculated charges (in uAh): [" + ', '.join(
-                "%.2f" % value for value in charge_arr) + "]")  # Show calculated charges in the message log
+                "%.2f" % value for value in
+                charge_arr) + "]")  # Show calculated charges in the message log
         state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
         preview_cancel_button.show()
+        GraphAutoExport(plot_frame, cv_parameters['filename'])
 # TODO: figure out the error in displaying the integral from charge_arr
 
 def cv_preview():
@@ -1111,7 +1133,18 @@ def cd_start():
         cd_plot_curves = []
         cd_outputfile_raw = open(cd_parameters['filename'], 'w',
                                  1)  # This file will contain time, potential, and current data
-        cd_outputfile_raw.write("Elapsed time(s)\tPotential(V)\tCurrent(A)\n")
+        cd_outputfile_raw.write(
+            f"""Device Serial:\t{dev.serial_number}
+Lower Bound[V]:\t{cd_parameters['lbound']}
+Upper Bound[V]:\t{cd_parameters['ubound']}
+Charge Current[mA]:\t{cd_parameters['chargecurrent']}
+Discharge Current[mA]:\t{cd_parameters['dischargecurrent']}
+Half Cycles:\t{cd_parameters['numcycles']}
+Samples to Average:\t{cd_parameters['numsamples']}
+
+Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tHalf-Cycle\n"""
+        )
+        # cd_outputfile_raw.write("Elapsed time(s)\tPotential(V)\tCurrent(A)\n")
         base, extension = os.path.splitext(cd_parameters['filename'])
         cd_outputfile_capacities = open(base + '_capacities' + extension, 'w',
                                         1)  # This file will contain capacity data for each cycle
@@ -1137,7 +1170,7 @@ def cd_start():
         plot_frame.enableAutoRange()
         plot_frame.setLabel('bottom', 'Inserted/extracted charge', units="Ah")
         plot_frame.setLabel('left', 'Potential', units="V")
-        cd_plot_curves.append(plot_frame.plot(pen='y'))  # Draw potential as a function of charge in yellow
+        cd_plot_curves.append(plot_frame.plot(pen=pen_color[0]))  # Draw potential as a function of charge in yellow
         log_message("Charge/discharge measurement started. Saving to: %s" % cd_parameters['filename'])
         cd_current_cycle_entry.setText("%d" % cd_currentcycle)  # Indicate the current cycle number
         state = States.Measuring_CD
@@ -1155,14 +1188,22 @@ def cd_update():
         cd_potential_data.add_sample(potential)
         cd_current_data.add_sample(1e-3 * current)  # Convert mA to A
         if len(cd_time_data.samples) == 0 and len(cd_time_data.averagebuffer) > 0:  # A new average was just calculated
-            cd_outputfile_raw.write("%e\t%e\t%e\n" % (
-                cd_time_data.averagebuffer[-1], cd_potential_data.averagebuffer[-1],
-                cd_current_data.averagebuffer[-1]))  # Write it out
+            # cd_outputfile_raw.write("%e\t%e\t%e\n" % (
+            #     cd_time_data.averagebuffer[-1],
+            #     cd_potential_data.averagebuffer[-1],
+            #     cd_current_data.averagebuffer[-1]))  # Write it out
+            cd_outputfile_raw.write(
+                f"{cd_time_data.averagebuffer[-1]:e}\t"
+                f"{cd_potential_data.averagebuffer[-1]:e}\t"
+                f"{cd_current_data.averagebuffer[-1]:e}\t"
+                f"{cd_currentcycle}\n"
+            )
             charge = numpy.abs(scipy.integrate.cumtrapz(cd_current_data.averagebuffer, cd_time_data.averagebuffer,
                                                         initial=0.) / 3600.)  # Cumulative charge in Ah
             cd_plot_curves[cd_currentcycle - 1].setData(charge, cd_potential_data.averagebuffer)  # Update the graph
         if (cd_currentsetpoint > 0 and potential > cd_parameters['ubound']) or (
                 cd_currentsetpoint < 0 and potential < cd_parameters['lbound']):  # A potential cut-off has been reached
+            log_message("Cycle %s Finished" % cd_currentcycle)
             if cd_currentsetpoint == cd_parameters[
                 'chargecurrent']:  # Switch from the discharge phase to the charge phase or vice versa
                 cd_currentsetpoint = cd_parameters['dischargecurrent']
@@ -1173,7 +1214,8 @@ def cd_update():
             set_current_range()  # Set new current range
             set_output(1, cd_currentsetpoint)  # Set current to setpoint
             cd_plot_curves.append(plot_frame.plot(
-                pen='y'))  # Start a new plot curve and append it to the plot area (keeping the old ones as well)
+                pen=pen_color[
+                    cd_currentcycle % 7]))  # Start a new plot curve and append it to the plot area (keeping the old ones as well)
             cd_charges.append(numpy.abs(numpy.trapz(cd_current_data.averagebuffer,
                                                     cd_time_data.averagebuffer) / 3600.))  # Cumulative charge in Ah
             if cd_currentcycle % 2 == 0:  # Write out the charge and discharge capacities after both a charge and discharge phase (i.e. after cycle 2, 4, 6...)
@@ -1204,6 +1246,7 @@ def cd_stop(interrupted=True):
         cd_current_cycle_entry.setText("")  # Clear cycle indicator
         state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
         preview_cancel_button.show()
+        GraphAutoExport(plot_frame, cd_parameters['filename'])
 
 
 def rate_getparams():
@@ -1362,11 +1405,31 @@ def rate_stop(interrupted=True):
         rate_current_crate_entry.setText("")  # Clear C-rate indicator
         state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
         preview_cancel_button.show()
+        GraphAutoExport(plot_frame, rate_parameters['filename'])
+
+
+#--------------------------------------------------------------------------------------------------------------------
+'''Redefines the QMainWindow's closeEvent functionality. This allows us to monitor for the application window's close button to be pressed
+and to ask for confirmation first.'''
+class MainWindow(QtGui.QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+    def closeEvent(self, event):
+        reply = PyQt5.QtWidgets.QMessageBox.question(self, 'Window Close', 'Are you sure you want to close the window?',
+                                                 PyQt5.QtWidgets.QMessageBox.Yes | PyQt5.QtWidgets.QMessageBox.No, PyQt5.QtWidgets.QMessageBox.No)
+
+        if reply == PyQt5.QtWidgets.QMessageBox.Yes:
+            event.accept()
+            print('Window closed')
+        else:
+            event.ignore()
 
 
 # Set up the GUI - Main Window --------------------------------------------------------------------------------------
 app = QtGui.QApplication([])
-win = QtGui.QMainWindow()
+#win = QtGui.QMainWindow()
+win = MainWindow()
 win.setGeometry(300, 300, 1024, 700)
 win.setWindowTitle('USB potentiostat/galvanostat')
 win.setWindowIcon(QtGui.QIcon('icon/icon.png'))
@@ -1414,9 +1477,9 @@ preview_cancel_hlayout.addWidget(preview_cancel_button)
 preview_cancel_button.hide()
 
 tab_frame = QtGui.QTabWidget()
-tab_frame.setFixedWidth(305)
+tab_frame.setFixedWidth(400)
 
-tab_names = ["Hardware", "CV", "Charge/disch.", "Rate testing"]
+tab_names = ["Hardware", "CV", "Charge/disch.", "Rate testing", "OCV testing"]
 tabs = [add_my_tab(tab_frame, tab_name) for tab_name in tab_names]
 
 # Set up the GUI - Hardware tab --------------------------------------------------------------------------------------
@@ -1478,7 +1541,7 @@ hardware_calibration_box_layout.addLayout(hardware_calibration_dac_hlayout)
 hardware_calibration_dac_vlayout = QtGui.QVBoxLayout()
 hardware_calibration_dac_hlayout.addLayout(hardware_calibration_dac_vlayout)
 hardware_calibration_dac_offset = make_label_entry(hardware_calibration_dac_vlayout, "DAC Offset")
-hardware_calibration_dac_offset.setToolTip("DAC Offset: ") #TODO: update tooltips when confirmed
+hardware_calibration_dac_offset.setToolTip("DAC Offset: ")  # TODO: update tooltips when confirmed
 hardware_calibration_dac_gain = make_label_entry(hardware_calibration_dac_vlayout, "DAC Gain")
 hardware_calibration_dac_gain.setToolTip("DAC Gain: ")
 hardware_calibration_dac_calibrate_button = QtGui.QPushButton("Auto\nCalibrate")
@@ -1575,8 +1638,9 @@ hardware_manual_control_box_layout.setSpacing(5)
 hardware_manual_control_box_layout.setContentsMargins(3, 9, 3, 3)
 
 hardware_vbox.addWidget(hardware_manual_control_box)
-
-hardware_log_box = QtGui.QGroupBox(title="Log to file", flat=False)
+# ==============================================================================
+# this may no longer be necessary with OCV tab TODO: remove?
+hardware_log_box = QtGui.QGroupBox(title="Log potential and current to file", flat=False)
 format_box_for_parameter(hardware_log_box)
 hardware_log_box_layout = QtGui.QHBoxLayout()
 hardware_log_box.setLayout(hardware_log_box_layout)
@@ -1595,6 +1659,30 @@ hardware_log_box_layout.setSpacing(5)
 hardware_log_box_layout.setContentsMargins(3, 9, 3, 3)
 
 hardware_vbox.addWidget(hardware_log_box)
+# =========================================================================
+error_log_box = QtGui.QGroupBox(title="Error Logging", flat=False)
+format_box_for_parameter(error_log_box)
+error_log_box_layout = QtGui.QHBoxLayout()
+error_log_box.setLayout(error_log_box_layout)
+error_log_checkbox = QtGui.QCheckBox("Log")
+# error_log_checkbox.setTooltip("Test")
+error_log_checkbox.stateChanged.connect(toggle_error_logging)
+error_log_box_layout.addWidget(error_log_checkbox)
+error_log_filename = QtGui.QLineEdit()
+error_log_box_layout.addWidget(error_log_filename)
+error_log_choose_button = QtGui.QPushButton("...")
+error_log_choose_button.setToolTip("WARNING: ERROR LOG MAY BE SEVERAL GB IN SIZE, USE LINUX TO SPLIT")
+# TODO: set up log file splitting -> 200mb
+error_log_choose_button.setFixedWidth(32)
+error_log_choose_button.clicked.connect(
+    lambda: choose_file(error_log_filename, "Choose where to save error logs"))
+error_log_box_layout.addWidget(error_log_choose_button)
+# TODO: handoff error log filename to logging functionality in main loop
+
+error_log_box_layout.setSpacing(5)
+error_log_box_layout.setContentsMargins(3, 9, 3, 3)
+
+hardware_vbox.addWidget(error_log_box)
 
 hardware_vbox.setSpacing(6)
 hardware_vbox.setContentsMargins(3, 3, 3, 3)
@@ -1615,7 +1703,7 @@ cv_ubound_entry = make_label_entry(cv_params_layout, "Upper bound (V)")
 cv_hbox = QtGui.QHBoxLayout()
 cv_label = QtGui.QLabel(text="Start potential (V)")
 cv_startpot_entry = QtGui.QLineEdit()
-cv_get_button = QtGui.QPushButton("OCP")
+cv_get_button = QtGui.QPushButton("OCV")
 cv_get_button.setFont(custom_size_font(8))
 cv_get_button.setFixedWidth(32)
 cv_get_button.clicked.connect(cv_get_ocp)
@@ -1634,7 +1722,6 @@ cv_numcycles_entry.editingFinished.connect(cv_numcycles_changed_callback)
 cv_numsamples_entry = make_label_entry(cv_params_layout, "Samples to average")
 cv_numsamples_entry.setToolTip("Time between data points: n x 90E-3 seconds")
 cv_numsamples_entry.setText("1")
-
 
 cv_params_layout.setSpacing(6)
 cv_params_layout.setContentsMargins(3, 10, 3, 3)
@@ -1677,7 +1764,7 @@ cv_time_calculator_box = QtGui.QGroupBox(title="Timing Estimates", flat=False)
 format_box_for_parameter(cv_time_calculator_box)
 cv_time_calculator_box_layout = QtGui.QVBoxLayout()
 cv_time_calculator_box.setLayout(cv_time_calculator_box_layout)
-cv_time_calculator_text = QtGui.QLabel("Duration: \nElapsed Time: \nStart: \nEst. End: ") # TODO: elapsed time global?
+cv_time_calculator_text = QtGui.QLabel("Duration: \nElapsed Time: \nStart: \nEst. End: ")  # TODO: elapsed time global?
 cv_time_calculator_box_layout.addWidget(cv_time_calculator_text)
 cv_time_calculator_box_layout.setSpacing(5)
 cv_time_calculator_box_layout.setContentsMargins(3, 9, 3, 3)
@@ -1709,10 +1796,12 @@ cd_params_box.setLayout(cd_params_layout)
 cd_lbound_entry = make_label_entry(cd_params_layout, "Lower bound (V)")
 cd_ubound_entry = make_label_entry(cd_params_layout, "Upper bound (V)")
 cd_chargecurrent_entry = make_label_entry(cd_params_layout, u"Charge current (µA)")
+cd_chargecurrent_entry.setToolTip("Positive -> 1st Cycle Charge / Negative -> 1st Cycle Discharge")
 cd_dischargecurrent_entry = make_label_entry(cd_params_layout, u"Discharge current (µA)")
+cd_dischargecurrent_entry.setToolTip("Flip sign of the Charge Current")
 cd_numcycles_entry = make_label_entry(cd_params_layout, "Number of half cycles")
 cd_numsamples_entry = make_label_entry(cd_params_layout, "Samples to average")
-cd_numsamples_entry.setText("1")
+cd_numsamples_entry.setText("5")
 
 cd_params_layout.setSpacing(6)
 cd_params_layout.setContentsMargins(3, 10, 3, 3)
@@ -1757,7 +1846,65 @@ cd_info_layout.setContentsMargins(3, 10, 3, 3)
 cd_vbox.addWidget(cd_info_box)
 
 tabs[2].setLayout(cd_vbox)
+# Set up the GUI - OCV test tab -----------------------------------------------------------------------------------
+# OCVs can currently be run by simply logging on the settings tab, but the goal is to add a start and stop functionality
+# to the logging, ie log for a certain duration, similar to testing on professional devices. This will be useful for
+# running an OCV test on one USB Potentiostat (example: Anode to Reference) while performing a CD test on cathode to reference
+# on a second device.
+# TODO: add OCV test tab/layout
+ocv_vbox = QtGui.QVBoxLayout()
+ocv_vbox.setAlignment(QtCore.Qt.AlignTop)
 
+ocv_params_box = QtGui.QGroupBox(title="OCV testing parameters", flat=False)
+format_box_for_parameter(ocv_params_box)
+ocv_params_layout = QtGui.QVBoxLayout()
+ocv_params_box.setLayout(ocv_params_layout)
+ocv_duration_entry = make_label_entry(ocv_params_layout, "OCV Duration (s)")
+
+ocv_params_layout.setSpacing(6)
+ocv_params_layout.setContentsMargins(3, 10, 3, 3)
+ocv_vbox.addWidget(ocv_params_box)
+
+ocv_file_box = QtGui.QGroupBox(title="Output data filename", flat=False)
+format_box_for_parameter(ocv_file_box)
+ocv_file_layout = QtGui.QVBoxLayout()
+ocv_file_box.setLayout(ocv_file_layout)
+ocv_file_choose_layout = QtGui.QHBoxLayout()
+ocv_file_entry = QtGui.QLineEdit()
+ocv_file_choose_layout.addWidget(ocv_file_entry)
+ocv_file_choose_button = QtGui.QPushButton("...")
+ocv_file_choose_button.setFixedWidth(32)
+ocv_file_choose_button.clicked.connect(
+    lambda: choose_file(ocv_file_entry, "Choose where to save the rate testing measurement data"))
+ocv_file_choose_layout.addWidget(ocv_file_choose_button)
+ocv_file_layout.addLayout(ocv_file_choose_layout)
+
+ocv_file_layout.setSpacing(6)
+ocv_file_layout.setContentsMargins(3, 10, 3, 3)
+ocv_vbox.addWidget(ocv_file_box)
+
+ocv_start_button = QtGui.QPushButton("Start Rate Test")
+ocv_start_button.clicked.connect(rate_start)
+ocv_vbox.addWidget(ocv_start_button)
+ocv_stop_button = QtGui.QPushButton("Stop Rate Test")
+ocv_stop_button.clicked.connect(lambda: rate_stop(interrupted=True))  # Todo: fix this
+ocv_vbox.addWidget(ocv_stop_button)
+
+ocv_vbox.setSpacing(6)
+ocv_vbox.setContentsMargins(3, 3, 3, 3)
+
+ocv_info_box = QtGui.QGroupBox(title="Information", flat=False)
+format_box_for_parameter(ocv_info_box)
+ocv_info_layout = QtGui.QVBoxLayout()
+ocv_info_box.setLayout(ocv_info_layout)
+ocv_current_crate_entry = make_label_entry(ocv_info_layout, "Current C-rate")
+ocv_current_crate_entry.setReadOnly(True)
+
+ocv_info_layout.setSpacing(6)
+ocv_info_layout.setContentsMargins(3, 10, 3, 3)
+ocv_vbox.addWidget(ocv_info_box)
+
+tabs[4].setLayout(ocv_vbox)
 # Set up the GUI - Rate testing tab --------------------------------------------------------------------------------
 rate_vbox = QtGui.QVBoxLayout()
 rate_vbox.setAlignment(QtCore.Qt.AlignTop)
@@ -1817,7 +1964,7 @@ rate_info_layout.setContentsMargins(3, 10, 3, 3)
 rate_vbox.addWidget(rate_info_box)
 
 tabs[3].setLayout(rate_vbox)
-
+# ------------------------------------------------------------------------------------------
 hbox = QtGui.QHBoxLayout()
 hbox.addLayout(display_plot_frame)
 hbox.addWidget(tab_frame)
@@ -1851,19 +1998,26 @@ def periodic_update():  # A state machine is used to determine which functions n
     elif state == States.Stationary_Graph:
         read_potential_current()
 
-if usb_debug_flag: # TODO: enable debugging of USB
-    #Depending on global flag, toggles debugging of USB features. Setting this up to help diagnose crashes during longer CV tests.
+
+# ----------------------------------------------------------------------------------------------------------------------
+if usb_debug_flag:  # TODO: create GUI flag/checkbox
+    # Depending on global flag, toggles debugging of USB features. Setting this up to help diagnose crashes during longer CV tests.
+    # This logging method does not rotate files due to the long run times of our tests, and because the errors flood the output streams
+    # This means that log files can reach several GIGABYTES IN SIZE. Word processors can only open files under 500MB, so it is necessary
+    # to split the file. This is easiest in Linux's command line ->
+    # split -b 200MB filepath
+    # this will split the file (located at filepath) into as many 200MB chunks as necessary
+
     file_path = os.getcwd()
-    os.environ['PYUSB_DEBUG'] = 'debug' #no output currently?
+    os.environ['PYUSB_DEBUG'] = 'debug'
     pyusb_path = 'pyusb_log.log'
-    #os.environ['PYUSB_LOG_FILENAME'] = 'pyusb_path'
-    os.environ['LIBUSB_DEBUG'] = '3'    #outputs currently to console - change to write to file
+    os.environ['LIBUSB_DEBUG'] = '3'
     log_path = os.path.join(file_path, 'cv_log.log')
     logging.basicConfig(
-         level=logging.DEBUG,
-         format='%(asctime)s:%(levelname)s:%(name)s:%(message)s',
-         filename=log_path,
-         filemode='a'
+        level=logging.DEBUG,
+        format='%(asctime)s:%(levelname)s:%(name)s:%(message)s',
+        filename=log_path,
+        filemode='a'
     )
     stdout_logger = logging.getLogger('STDOUT')
     sl = StreamToLogger(stdout_logger, logging.DEBUG)
@@ -1872,7 +2026,7 @@ if usb_debug_flag: # TODO: enable debugging of USB
     stderr_logger = logging.getLogger('STDERR')
     sl = StreamToLogger(stderr_logger, logging.ERROR)
     sys.stderr = sl
-
+# ---------------------------------------------------------------------------------------------------------------------
 
 timer = QtCore.QTimer()
 timer.timeout.connect(periodic_update)
