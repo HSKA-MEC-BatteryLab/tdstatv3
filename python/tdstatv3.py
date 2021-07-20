@@ -28,6 +28,7 @@ import scipy.integrate
 import usb
 from PyQt5 import QtWidgets, QtCore, QtGui
 
+
 # variable initializations
 usb_debug_flag = False
 usb_vid = "0xa0a0"  # Default USB vendor ID
@@ -56,11 +57,12 @@ test_end = None
 cv_cycle = None
 cd_parameters = {}  # Dictionary to hold the charge/discharge parameters
 rate_parameters = {}  # Dictionary to hold the rate testing parameters
+test_sequence = {}
 overcounter, undercounter, skipcounter = 0, 0, 0  # Global counters used for automatic current ranging
 time_of_last_adcread = 0.
 adcread_interval = 0.09  # ADC sampling interval (in seconds)
 logging_enabled = False  # Enable logging of potential and current in idle mode (can be adjusted in the GUI)
-pen_color = ['y', 'r', 'c', 'm', 'g', 'k', 'w']  # graph line color
+pen_color = ['y', 'r', 'g', 'c', 'm', 'w', "#663300", "#666699", "#ff9900", "#339933"]  # graph line color
 
 if platform.system() != "Windows":
     # On Linux/OSX, use the Qt timer
@@ -219,7 +221,7 @@ def cv_sweep(time_elapsed, ustart, ustop, ubound, lbound, scanrate, n):
     srtime = scanrate * time_elapsed  # Linear potential sweep
     cv_duration = (srt_0 + srt_1 + srt_2) / scanrate
     if srtime < srt_0:  # Initial stage
-        cv_cycle = "initial"
+        cv_cycle = 0
         return ustart + srtime
     elif srtime < srt_0 + srt_1:  # Cyclic stage
         srtime = srtime - srt_0
@@ -229,10 +231,10 @@ def cv_sweep(time_elapsed, ustart, ustop, ubound, lbound, scanrate, n):
     elif srtime < srt_0 + srt_1 + srt_2:  # Final stage
         srtime = srtime - srt_0 - srt_1
         if ustop > ubound:
-            cv_cycle = "final"
+            cv_cycle = n + 1
             return ubound + srtime
         else:
-            cv_cycle = "final"
+            cv_cycle = n + 1
             return ubound - srtime
     else:
         return None  # CV finished
@@ -317,6 +319,13 @@ def make_label_entry(parent, labelname):
     parent.addLayout(hbox)
     return entry
 
+
+def make_radio_entry(parent, labelname):
+    hbox = QtGui.QHBoxLayout()
+    radio_button = QtGui.QRadioButton(text=labelname)
+    hbox.addWidget(radio_button)
+    parent.addLayout(hbox)
+    return radio_button
 
 def custom_size_font(fontsize):
     """Return the default Qt font with a custom point size."""
@@ -807,6 +816,39 @@ def choose_file(file_entry_field, questionstring):
     file_entry_field.setText(tempdirectory[0])  # getSaveFileName returns a tuple, so access first element!
 
 
+def add_test(widget_list, test):
+    widget_list.addItem(test)
+
+
+def remove_test(widget_list, index):
+    if len(widget_list) > 0:
+        for i in test_sequence.keys():
+            print(widget_list.item(index).text())
+            if test_sequence[i]["filename"] == widget_list.item(index).text():
+                key_id = i
+        widget_list.takeItem(index)
+        del test_sequence[key_id]
+        # i = 0
+        # for id in test_sequence:
+        #     test_sequence[id]['test_key'] = i
+        #     i = i + 1
+        print(test_sequence)
+
+
+def confirm_test():
+    i = 0
+    for key in test_sequence:
+        test_sequence[key]['test_key'] = i
+        i = i + 1
+    sequence_start_button.setEnabled(True)
+
+
+def choose_directory(directory_entry_field, questionstring):
+    directorydialog = QtGui.QFileDialog()
+    tempdirectory = directorydialog.getExistingDirectory(None, questionstring)
+    directory_entry_field.setText(tempdirectory)
+
+
 def toggle_logging(checkbox_state):
     """Enable or disable logging of measurements to a file based on the state of a checkbox (2 means checked)."""
     global logging_enabled
@@ -897,7 +939,7 @@ def cv_numcycles_changed_callback():
         finaltime = abs(float(cv_stoppot_entry.text()) - float(cv_ubound_entry.text()))
         cv_duration = (initialtime + cycletime + finaltime) / (float(cv_scanrate_entry.text()) / 1000)
         cv_duration_text = duration_to_text_days_hours(cv_duration)
-        cv_time_calculator_text.setText(f"Duration: {cv_duration_text}\nStart: \nEst. End:\nElapsed Time: ")
+        cv_time_calculator_text.setText(f"Duration: {cv_duration_text}\nStart: \nEst. End: ")
     except:
         pass
 
@@ -923,7 +965,7 @@ def cv_start():
         test_end = datetime.datetime.now() + datetime.timedelta(seconds=cv_duration)
         cv_end_text = test_end.strftime("%Y-%m-%d %H:%M:%S")
         cv_time_calculator_text.setText(
-            f"Duration: {cv_duration_text}\nStart: {test_start}\nEst. End: {cv_end_text}\nElapsed Time: ")
+            f"Duration: {cv_duration_text}\nStart: {test_start}\nEst. End: {cv_end_text} ")
         cv_outputfile = open(cv_parameters['filename'], 'w', 1)  # 1 means line-buffered
         # do not change spacing below - it will change the fileheader
         cv_outputfile.write(
@@ -1007,6 +1049,8 @@ def cv_update():
                     f"{cv_current_data.averagebuffer[-1]:e}\t"
                     f"{cv_cycle}\n"
                 )
+                cv_plot_curve.pen = pen_color[cv_cycle % len(pen_color)] # Todo: Confirm this works to change cv plot color with cycle
+                # cv_plot_curve = plot_frame.plot(pen=pen_color[cv_cycle % len(pen_color)]) # alternate idea
                 cv_plot_curve.setData(cv_potential_data.averagebuffer,
                                       cv_current_data.averagebuffer)  # Update the graph
             skipcounter = auto_current_range()  # Update the graph
@@ -1259,7 +1303,7 @@ def rate_getparams():
         rate_parameters['crates'] = [float(x) for x in rate_crates_entry.text().split(",")]
         rate_parameters['currents'] = [rate_parameters['one_c_current'] * rc for rc in rate_parameters['crates']]
         rate_parameters['numcycles'] = int(rate_numcycles_entry.text())
-        rate_parameters['numsamples'] = int(cd_numsamples_entry.text())
+        # rate_parameters['numsamples'] = int(rate_numsamples_entry.text())
         rate_parameters['filename'] = str(rate_file_entry.text())
         return True
     except ValueError:
@@ -1408,12 +1452,30 @@ def rate_stop(interrupted=True):
         GraphAutoExport(plot_frame, rate_parameters['filename'])
 
 
-#--------------------------------------------------------------------------------------------------------------------
+# #--------------------------------------------------------------------------------------------------------------------
 '''Redefines the QMainWindow's closeEvent functionality. This allows us to monitor for the application window's close button to be pressed
 and to ask for confirmation first.'''
-class MainWindow(QtGui.QMainWindow):
+class MainWindow(QtWidgets.QMainWindow):
+    # self.w = None
     def __init__(self):
         super().__init__()
+        self.w = None
+
+    def show_test_window(self, function):
+        if function == "CV":
+            self.w = SequenceCV()
+            self.w.show()
+        if function == "CCD":
+            self.w = SequenceCD()
+            self.w.show()
+        if function == "Rate":
+            self.w = SequenceRate()
+            self.w.show()
+        if function == "OCV":
+            self.w = SequenceOCV()
+            self.w.show()
+        else:
+            pass
 
     def closeEvent(self, event):
         reply = PyQt5.QtWidgets.QMessageBox.question(self, 'Window Close', 'Are you sure you want to close the window?',
@@ -1479,7 +1541,7 @@ preview_cancel_button.hide()
 tab_frame = QtGui.QTabWidget()
 tab_frame.setFixedWidth(400)
 
-tab_names = ["Hardware", "CV", "Charge/disch.", "Rate testing", "OCV testing"]
+tab_names = ["Hardware", "CV", "Charge/disch.", "Rate testing", "Sequence"]
 tabs = [add_my_tab(tab_frame, tab_name) for tab_name in tab_names]
 
 # Set up the GUI - Hardware tab --------------------------------------------------------------------------------------
@@ -1639,7 +1701,6 @@ hardware_manual_control_box_layout.setContentsMargins(3, 9, 3, 3)
 
 hardware_vbox.addWidget(hardware_manual_control_box)
 # ==============================================================================
-# this may no longer be necessary with OCV tab TODO: remove?
 hardware_log_box = QtGui.QGroupBox(title="Log potential and current to file", flat=False)
 format_box_for_parameter(hardware_log_box)
 hardware_log_box_layout = QtGui.QHBoxLayout()
@@ -1759,12 +1820,11 @@ cv_file_layout.setSpacing(6)
 cv_file_layout.setContentsMargins(3, 10, 3, 3)
 cv_vbox.addWidget(cv_file_box)
 
-# TODO: add calculated duration, start, projected end output
 cv_time_calculator_box = QtGui.QGroupBox(title="Timing Estimates", flat=False)
 format_box_for_parameter(cv_time_calculator_box)
 cv_time_calculator_box_layout = QtGui.QVBoxLayout()
 cv_time_calculator_box.setLayout(cv_time_calculator_box_layout)
-cv_time_calculator_text = QtGui.QLabel("Duration: \nElapsed Time: \nStart: \nEst. End: ")  # TODO: elapsed time global?
+cv_time_calculator_text = QtGui.QLabel("Duration: \nStart: \nEst. End: ")
 cv_time_calculator_box_layout.addWidget(cv_time_calculator_text)
 cv_time_calculator_box_layout.setSpacing(5)
 cv_time_calculator_box_layout.setContentsMargins(3, 9, 3, 3)
@@ -1846,65 +1906,7 @@ cd_info_layout.setContentsMargins(3, 10, 3, 3)
 cd_vbox.addWidget(cd_info_box)
 
 tabs[2].setLayout(cd_vbox)
-# Set up the GUI - OCV test tab -----------------------------------------------------------------------------------
-# OCVs can currently be run by simply logging on the settings tab, but the goal is to add a start and stop functionality
-# to the logging, ie log for a certain duration, similar to testing on professional devices. This will be useful for
-# running an OCV test on one USB Potentiostat (example: Anode to Reference) while performing a CD test on cathode to reference
-# on a second device.
-# TODO: add OCV test tab/layout
-ocv_vbox = QtGui.QVBoxLayout()
-ocv_vbox.setAlignment(QtCore.Qt.AlignTop)
 
-ocv_params_box = QtGui.QGroupBox(title="OCV testing parameters", flat=False)
-format_box_for_parameter(ocv_params_box)
-ocv_params_layout = QtGui.QVBoxLayout()
-ocv_params_box.setLayout(ocv_params_layout)
-ocv_duration_entry = make_label_entry(ocv_params_layout, "OCV Duration (s)")
-
-ocv_params_layout.setSpacing(6)
-ocv_params_layout.setContentsMargins(3, 10, 3, 3)
-ocv_vbox.addWidget(ocv_params_box)
-
-ocv_file_box = QtGui.QGroupBox(title="Output data filename", flat=False)
-format_box_for_parameter(ocv_file_box)
-ocv_file_layout = QtGui.QVBoxLayout()
-ocv_file_box.setLayout(ocv_file_layout)
-ocv_file_choose_layout = QtGui.QHBoxLayout()
-ocv_file_entry = QtGui.QLineEdit()
-ocv_file_choose_layout.addWidget(ocv_file_entry)
-ocv_file_choose_button = QtGui.QPushButton("...")
-ocv_file_choose_button.setFixedWidth(32)
-ocv_file_choose_button.clicked.connect(
-    lambda: choose_file(ocv_file_entry, "Choose where to save the rate testing measurement data"))
-ocv_file_choose_layout.addWidget(ocv_file_choose_button)
-ocv_file_layout.addLayout(ocv_file_choose_layout)
-
-ocv_file_layout.setSpacing(6)
-ocv_file_layout.setContentsMargins(3, 10, 3, 3)
-ocv_vbox.addWidget(ocv_file_box)
-
-ocv_start_button = QtGui.QPushButton("Start Rate Test")
-ocv_start_button.clicked.connect(rate_start)
-ocv_vbox.addWidget(ocv_start_button)
-ocv_stop_button = QtGui.QPushButton("Stop Rate Test")
-ocv_stop_button.clicked.connect(lambda: rate_stop(interrupted=True))  # Todo: fix this
-ocv_vbox.addWidget(ocv_stop_button)
-
-ocv_vbox.setSpacing(6)
-ocv_vbox.setContentsMargins(3, 3, 3, 3)
-
-ocv_info_box = QtGui.QGroupBox(title="Information", flat=False)
-format_box_for_parameter(ocv_info_box)
-ocv_info_layout = QtGui.QVBoxLayout()
-ocv_info_box.setLayout(ocv_info_layout)
-ocv_current_crate_entry = make_label_entry(ocv_info_layout, "Current C-rate")
-ocv_current_crate_entry.setReadOnly(True)
-
-ocv_info_layout.setSpacing(6)
-ocv_info_layout.setContentsMargins(3, 10, 3, 3)
-ocv_vbox.addWidget(ocv_info_box)
-
-tabs[4].setLayout(ocv_vbox)
 # Set up the GUI - Rate testing tab --------------------------------------------------------------------------------
 rate_vbox = QtGui.QVBoxLayout()
 rate_vbox.setAlignment(QtCore.Qt.AlignTop)
@@ -1964,6 +1966,369 @@ rate_info_layout.setContentsMargins(3, 10, 3, 3)
 rate_vbox.addWidget(rate_info_box)
 
 tabs[3].setLayout(rate_vbox)
+
+# Set up the GUI - Sequence Testing -----------------------------------------------------------------------------------
+
+sequence_vbox = QtGui.QVBoxLayout()
+sequence_vbox.setAlignment(QtCore.Qt.AlignTop)
+
+sequence_file_box = QtGui.QGroupBox(title="Output data directory", flat=False)
+format_box_for_parameter(sequence_file_box)
+sequence_file_layout = QtGui.QVBoxLayout()
+sequence_file_box.setLayout(sequence_file_layout)
+sequence_file_choose_layout = QtGui.QHBoxLayout()
+sequence_file_entry = QtGui.QLineEdit()
+sequence_file_choose_layout.addWidget(sequence_file_entry)
+sequence_file_choose_button = QtGui.QPushButton("...")
+sequence_file_choose_button.setFixedWidth(32)
+sequence_file_choose_button.clicked.connect(
+    lambda: choose_directory(sequence_file_entry, "Choose root directory to store tests"))
+sequence_file_choose_layout.addWidget(sequence_file_choose_button)
+sequence_file_layout.addLayout(sequence_file_choose_layout)
+
+sequence_file_layout.setSpacing(6)
+sequence_file_layout.setContentsMargins(3, 10, 3, 3)
+sequence_vbox.addWidget(sequence_file_box)
+
+
+sequence_params_box = QtGui.QGroupBox(title="Sequence Builder", flat=False)
+sequence_params_layout = QtGui.QVBoxLayout()
+format_box_for_parameter(sequence_params_box)
+sequence_radio_layout = QtGui.QHBoxLayout()
+sequence_params_box.setLayout(sequence_params_layout)
+sequence_cvradio_entry = make_radio_entry(sequence_radio_layout, "CV")
+sequence_cvradio_entry.setChecked(True)
+sequence_cdradio_entry = make_radio_entry(sequence_radio_layout, "CCD")
+sequence_rateradio_entry = make_radio_entry(sequence_radio_layout, "Rate")
+# sequence_ocvradio_entry = make_radio_entry(sequence_radio_layout, "OCV") # Todo: add OCV functionality
+
+sequence_test_add_button = QtGui.QPushButton("Add Test")
+sequence_test_add_button.setEnabled(False)
+sequence_file_entry.textChanged.connect(lambda: check_button())
+sequence_test_add_button.clicked.connect(lambda: call_list_popup())
+sequence_test_remove_button = QtGui.QPushButton("Remove Test")
+sequence_test_remove_button.clicked.connect(lambda: remove_test(sequence_test_list, sequence_test_list.currentRow()))
+sequence_test_button_layout = QtGui.QHBoxLayout()
+sequence_test_button_layout.addWidget(sequence_test_add_button)
+sequence_test_button_layout.addWidget(sequence_test_remove_button)
+
+sequence_radio_layout.setSpacing(6)
+sequence_radio_layout.setContentsMargins(3, 10, 3, 3)
+sequence_params_layout.addLayout(sequence_radio_layout)
+sequence_params_layout.addLayout(sequence_test_button_layout)
+
+sequence_test_list = QtGui.QListWidget()
+sequence_params_layout.addWidget(sequence_test_list)
+sequence_test_list.setDragDropMode(QtGui.QAbstractItemView.InternalMove)
+
+sequence_confirm_button = QtGui.QPushButton("Confirm Test Order")
+sequence_confirm_button.clicked.connect(lambda: confirm_test())
+sequence_params_layout.addWidget(sequence_confirm_button)
+
+sequence_vbox.addWidget(sequence_params_box)
+
+sequence_start_button = QtGui.QPushButton("Start Rate Test")
+sequence_start_button.setEnabled(False)
+sequence_start_button.clicked.connect(rate_start)  #Todo: fix this
+sequence_vbox.addWidget(sequence_start_button)
+
+sequence_stop_button = QtGui.QPushButton("Stop Rate Test")
+sequence_stop_button.clicked.connect(lambda: rate_stop(interrupted=True))  # Todo: fix this
+sequence_vbox.addWidget(sequence_stop_button)
+
+sequence_vbox.setSpacing(6)
+sequence_vbox.setContentsMargins(3, 3, 3, 3)
+
+sequence_info_box = QtGui.QGroupBox(title="Information", flat=False)
+format_box_for_parameter(sequence_info_box)
+sequence_info_layout = QtGui.QVBoxLayout()
+sequence_info_box.setLayout(sequence_info_layout)
+sequence_current_crate_entry = make_label_entry(sequence_info_layout, "Current C-rate")
+sequence_current_crate_entry.setReadOnly(True)
+
+sequence_info_layout.setSpacing(6)
+sequence_info_layout.setContentsMargins(3, 10, 3, 3)
+sequence_vbox.addWidget(sequence_info_box)
+
+tabs[4].setLayout(sequence_vbox)
+
+
+# ------------------------------------------------------------------------------------------
+# Pop-up Functions
+
+
+def check_button():
+    checkforentry = sequence_file_entry.text()
+    if checkforentry:
+        sequence_test_add_button.setEnabled(True)
+
+
+def call_list_popup():
+    if sequence_cvradio_entry.isChecked():
+        MainWindow.show_test_window(win, sequence_cvradio_entry.text())
+    if sequence_cdradio_entry.isChecked():
+        MainWindow.show_test_window(win, sequence_cdradio_entry.text())
+    if sequence_rateradio_entry.isChecked():
+        MainWindow.show_test_window(win, sequence_rateradio_entry.text())
+    # if sequence_cvradio_entry.isChecked(): # Todo: OCV functionality
+    #     MainWindow.show_test_window(win, sequence_ocvradio_entry.text())
+    else:
+        pass
+
+
+def seq_cv_getparams(self):
+    """Retrieve the CV parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
+    global cv_parameters
+    try:
+        cv_parameters['lbound'] = float(self.sequence_cv_lbound_entry.text())
+        cv_parameters['ubound'] = float(self.sequence_cv_ubound_entry.text())
+        cv_parameters['startpot'] = float(self.sequence_cv_startpot_entry.text())
+        cv_parameters['stoppot'] = float(self.sequence_cv_stoppot_entry.text())
+        cv_parameters['scanrate'] = float(self.sequence_cv_scanrate_entry.text()) / 1e3  # Convert to V/s
+        cv_parameters['numcycles'] = int(self.sequence_cv_numcycles_entry.text())
+        cv_parameters['numsamples'] = int(self.sequence_cv_numsamples_entry.text())
+        cv_parameters['filename'] = str(self.sequence_cv_file_entry.text())
+        return True
+    except ValueError:
+        QtGui.QMessageBox.critical(mainwidget, "Not a number",
+                                   "One or more parameters could not be interpreted as a number.")
+        return False
+
+
+def seq_cv_listing(self, listname):
+    global cv_parameters
+    seq_cv_getparams(self)
+    if seq_cv_getparams(self) and cv_validate_parameters() and validate_file(cv_parameters['filename']):
+        listname.addItem(cv_parameters['filename']) # TODO: adapt this -> filename is usually the full directory NOT WANTED!
+        items = listname.findItems(cv_parameters['filename'], QtCore.Qt.MatchExactly)
+        if len(items) > 0:
+            for item in items:
+                i = listname.row(item)
+        test_sequence[i] = {}
+        test_sequence[i]['test_key'] = i
+        test_sequence[i]['test_type'] = 'CV'
+        test_sequence[i].update(cv_parameters)
+        self.close()
+        print(test_sequence)
+
+
+def seq_cd_getparams(self):
+    """Retrieve the charge/discharge parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
+    global cd_parameters
+    try:
+        cd_parameters['lbound'] = float(self.sequence_cd_lbound_entry.text())
+        cd_parameters['ubound'] = float(self.sequence_cd_ubound_entry.text())
+        cd_parameters['chargecurrent'] = float(self.sequence_cd_chargecurrent_entry.text()) / 1e3  # convert uA to mA
+        cd_parameters['dischargecurrent'] = float(self.sequence_cd_dischargecurrent_entry.text()) / 1e3  # convert uA to mA
+        cd_parameters['numcycles'] = int(self.sequence_cd_numcycles_entry.text())
+        cd_parameters['numsamples'] = int(self.sequence_cd_numsamples_entry.text())
+        cd_parameters['filename'] = str(self.sequence_cd_file_entry.text())
+        return True
+    except ValueError:
+        QtGui.QMessageBox.critical(mainwidget, "Not a number",
+                                   "One or more parameters could not be interpreted as a number.")
+        return False
+
+
+def seq_cd_listing(self, listname):
+    global cd_parameters
+    seq_cd_getparams(self)
+    if seq_cd_getparams(self) and cd_validate_parameters() and validate_file(cd_parameters['filename']):
+        listname.addItem(cd_parameters['filename']) # TODO: adapt this -> filename is usually the full directory NOT WANTED!
+        items = listname.findItems(cd_parameters['filename'], QtCore.Qt.MatchExactly)
+        if len(items) > 0:
+            for item in items:
+                i = listname.row(item)
+        test_sequence[i] = {}
+        test_sequence[i]['test_key'] = i
+        test_sequence[i]['test_type'] = 'CCD'
+        test_sequence[i].update(cd_parameters)
+        self.close()
+        print(test_sequence)
+
+
+def seq_rate_getparams(self):
+    """Retrieve the rate testing parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
+    global rate_parameters
+    try:
+        rate_parameters['lbound'] = float(self.sequence_rate_lbound_entry.text())
+        rate_parameters['ubound'] = float(self.sequence_rate_ubound_entry.text())
+        rate_parameters['one_c_current'] = float(self.sequence_rate_capacity_entry.text()) / 1e3  # Convert uA to mA
+        rate_parameters['crates'] = [float(x) for x in self.sequence_rate_crates_entry.text().split(",")]
+        rate_parameters['currents'] = [rate_parameters['one_c_current'] * rc for rc in rate_parameters['crates']]
+        rate_parameters['numcycles'] = int(self.sequence_rate_numcycles_entry.text())
+        # rate_parameters['numsamples'] = int(self.sequence_rate_numsamples_entry.text())
+        rate_parameters['filename'] = str(self.sequence_rate_file_entry.text())
+        return True
+    except ValueError:
+        QtGui.QMessageBox.critical(mainwidget, "Not a number",
+                                   "One or more parameters could not be interpreted as a number.")
+        return False
+
+
+def seq_rate_listing(self, listname):
+    global rate_parameters
+    seq_rate_getparams(self)
+    if seq_rate_getparams(self) and rate_validate_parameters() and validate_file(rate_parameters['filename']):
+        listname.addItem(rate_parameters['filename']) # TODO: adapt this -> filename is usually the full directory NOT WANTED!
+        items = listname.findItems(rate_parameters['filename'], QtCore.Qt.MatchExactly)
+        if len(items) > 0:
+            for item in items:
+                i = listname.row(item)
+        test_sequence[i] = {}
+        test_sequence[i]['test_key'] = i
+        test_sequence[i]['test_type'] = 'Rate'
+        test_sequence[i].update(rate_parameters)
+        self.close()
+        print(test_sequence)
+
+
+# ------------------------------------------------------------------------------------------
+# CV Parameter Pop-up
+
+
+class SequenceCV(QtGui.QWidget):
+    def __init__(self):
+        super().__init__()
+
+        cv_msg_box = QtGui.QVBoxLayout()
+        sequence_vbox.setAlignment(QtCore.Qt.AlignTop)
+
+        sequence_cv_params_box = QtGui.QGroupBox(title="Cyclic voltammetry parameters", flat=False)
+        format_box_for_parameter(sequence_cv_params_box)
+        sequence_cv_params_layout = QtGui.QVBoxLayout()
+        sequence_cv_params_box.setLayout(sequence_cv_params_layout)
+        self.sequence_cv_file_entry = make_label_entry(sequence_cv_params_layout, "Filename (no directory)")
+        self.sequence_cv_lbound_entry = make_label_entry(sequence_cv_params_layout, "Lower bound (V)")
+        self.sequence_cv_ubound_entry = make_label_entry(sequence_cv_params_layout, "Upper bound (V)")
+
+        sequence_cv_hbox = QtGui.QHBoxLayout()
+        sequence_cv_label = QtGui.QLabel(text="Start potential (V)")
+        self.sequence_cv_startpot_entry = QtGui.QLineEdit()
+        sequence_cv_get_button = QtGui.QPushButton("OCV") # TODO: OCV Button necessary? Remove?
+        sequence_cv_get_button.setFont(custom_size_font(8))
+        sequence_cv_get_button.setFixedWidth(32)
+        sequence_cv_get_button.clicked.connect(cv_get_ocp)
+
+        sequence_cv_hbox.addWidget(sequence_cv_label)
+        sequence_cv_hbox.addWidget(self.sequence_cv_startpot_entry)
+        sequence_cv_hbox.addWidget(sequence_cv_get_button)
+        sequence_cv_params_layout.addLayout(sequence_cv_hbox)
+
+        self.sequence_cv_stoppot_entry = make_label_entry(sequence_cv_params_layout, "Stop potential (V)")
+        self.sequence_cv_scanrate_entry = make_label_entry(sequence_cv_params_layout, "Scan rate (mV/s)")
+        self.sequence_cv_scanrate_entry.setToolTip("Maximum Scan Rate: 500mV/s (45mV Step)")
+        self.sequence_cv_numcycles_entry = make_label_entry(sequence_cv_params_layout, "Number of cycles")
+        self.sequence_cv_numsamples_entry = make_label_entry(sequence_cv_params_layout, "Samples to average")
+        self.sequence_cv_numsamples_entry.setToolTip("Time between data points: n x 90E-3 seconds")
+        self.sequence_cv_numsamples_entry.setText("1")
+
+        sequence_cv_params_layout.setSpacing(6)
+        sequence_cv_params_layout.setContentsMargins(3, 10, 3, 3)
+        cv_msg_box.addWidget(sequence_cv_params_box)
+
+        sequence_cv_button_layout = QtGui.QHBoxLayout()
+        sequence_cv_accept_button = QtGui.QPushButton("Add")
+        sequence_cv_accept_button.clicked.connect(
+            lambda: seq_cv_listing(win.w, sequence_test_list))
+        sequence_cv_cancel_button = QtGui.QPushButton("Cancel")
+        sequence_cv_cancel_button.clicked.connect(lambda: self.close())
+        sequence_cv_button_layout.addWidget(sequence_cv_accept_button)
+        sequence_cv_button_layout.addWidget(sequence_cv_cancel_button)
+        cv_msg_box.addLayout(sequence_cv_button_layout)
+
+        cv_msg_box.setSpacing(6)
+        cv_msg_box.setContentsMargins(3, 3, 3, 3)
+        self.setLayout(cv_msg_box)
+
+# ------------------------------------------------------------------------------------------
+# CCD Parameter Pop-up
+
+
+class SequenceCD(QtGui.QWidget):
+    def __init__(self):
+        super().__init__()
+        cd_msg_box = QtGui.QVBoxLayout()
+        sequence_vbox.setAlignment(QtCore.Qt.AlignTop)
+
+        sequence_cd_params_box = QtGui.QGroupBox(title="Charge/discharge parameters", flat=False)
+        format_box_for_parameter(sequence_cd_params_box)
+        sequence_cd_params_layout = QtGui.QVBoxLayout()
+        sequence_cd_params_box.setLayout(sequence_cd_params_layout)
+        self.sequence_cd_file_entry = make_label_entry(sequence_cd_params_layout, "Filename (no directory)")
+        self.sequence_cd_lbound_entry = make_label_entry(sequence_cd_params_layout, "Lower bound (V)")
+        self.sequence_cd_ubound_entry = make_label_entry(sequence_cd_params_layout, "Upper bound (V)")
+        self.sequence_cd_chargecurrent_entry = make_label_entry(sequence_cd_params_layout, u"Charge current (µA)")
+        self.sequence_cd_chargecurrent_entry.setToolTip("Positive -> 1st Cycle Charge / Negative -> 1st Cycle Discharge")
+        self.sequence_cd_dischargecurrent_entry = make_label_entry(sequence_cd_params_layout, u"Discharge current (µA)")
+        self.sequence_cd_dischargecurrent_entry.setToolTip("Flip sign of the Charge Current")
+        self.sequence_cd_numcycles_entry = make_label_entry(sequence_cd_params_layout, "Number of half cycles")
+        self.sequence_cd_numsamples_entry = make_label_entry(sequence_cd_params_layout, "Samples to average")
+        self.sequence_cd_numsamples_entry.setText("5")
+
+        sequence_cd_params_layout.setSpacing(6)
+        sequence_cd_params_layout.setContentsMargins(3, 10, 3, 3)
+        cd_msg_box.addWidget(sequence_cd_params_box)
+
+        sequence_cd_button_layout = QtGui.QHBoxLayout()
+        sequence_cd_accept_button = QtGui.QPushButton("Add")
+        sequence_cd_accept_button.clicked.connect(
+            lambda: seq_cd_listing(win.w, sequence_test_list))
+        sequence_cd_cancel_button = QtGui.QPushButton("Cancel")
+        sequence_cd_cancel_button.clicked.connect(lambda: self.close())
+        sequence_cd_button_layout.addWidget(sequence_cd_accept_button)
+        sequence_cd_button_layout.addWidget(sequence_cd_cancel_button)
+        cd_msg_box.addLayout(sequence_cd_button_layout)
+
+        cd_msg_box.setSpacing(6)
+        cd_msg_box.setContentsMargins(3, 3, 3, 3)
+        self.setLayout(cd_msg_box)
+# ------------------------------------------------------------------------------------------
+# Rate Parameter Pop-up
+
+
+class SequenceRate(QtGui.QWidget):
+    def __init__(self):
+        super().__init__()
+        rate_msg_box = QtGui.QVBoxLayout()
+        sequence_vbox.setAlignment(QtCore.Qt.AlignTop)
+
+        sequence_rate_params_box = QtGui.QGroupBox(title="Rate testing parameters", flat=False)
+        format_box_for_parameter(sequence_rate_params_box)
+        sequence_rate_params_layout = QtGui.QVBoxLayout()
+        sequence_rate_params_box.setLayout(sequence_rate_params_layout)
+        self.sequence_rate_file_entry = make_label_entry(sequence_rate_params_layout, "Filename (no directory)")
+        self.sequence_rate_lbound_entry = make_label_entry(sequence_rate_params_layout, "Lower bound (V)")
+        self.sequence_rate_ubound_entry = make_label_entry(sequence_rate_params_layout, "Upper bound (V)")
+        self.sequence_rate_capacity_entry = make_label_entry(sequence_rate_params_layout, u"C (µAh)")
+        self.sequence_rate_crates_entry = make_label_entry(sequence_rate_params_layout, u"C-rates")
+        self.sequence_rate_crates_entry.setText("1, 2, 5, 10, 20, 50, 100")
+        self.sequence_rate_numcycles_entry = make_label_entry(sequence_rate_params_layout, u"Cycles per C-rate")
+
+        sequence_rate_params_layout.setSpacing(6)
+        sequence_rate_params_layout.setContentsMargins(3, 10, 3, 3)
+        rate_msg_box.addWidget(sequence_rate_params_box)
+
+        sequence_rate_button_layout = QtGui.QHBoxLayout()
+        sequence_rate_accept_button = QtGui.QPushButton("Add")
+        sequence_rate_accept_button.clicked.connect(
+            lambda: seq_rate_listing(win.w, sequence_test_list))
+        sequence_rate_cancel_button = QtGui.QPushButton("Cancel")
+        sequence_rate_cancel_button.clicked.connect(lambda: self.close())
+        sequence_rate_button_layout.addWidget(sequence_rate_accept_button)
+        sequence_rate_button_layout.addWidget(sequence_rate_cancel_button)
+        rate_msg_box.addLayout(sequence_rate_button_layout)
+
+        rate_msg_box.setSpacing(6)
+        rate_msg_box.setContentsMargins(3, 3, 3, 3)
+        self.setLayout(rate_msg_box)
+# ------------------------------------------------------------------------------------------
+# OCV Parameter Pop-up (to be implemented later)
+
+
+class SequenceOCV(QtGui.QWidget):
+    def __init__(self):
+        super().__init__()
 # ------------------------------------------------------------------------------------------
 hbox = QtGui.QHBoxLayout()
 hbox.addLayout(display_plot_frame)
