@@ -63,6 +63,9 @@ time_of_last_adcread = 0.
 adcread_interval = 0.09  # ADC sampling interval (in seconds)
 logging_enabled = False  # Enable logging of potential and current in idle mode (can be adjusted in the GUI)
 pen_color = ['y', 'r', 'g', 'c', 'm', 'w', "#663300", "#666699", "#ff9900", "#339933"]  # graph line color
+cd_voltage_finish_flag = False
+cd_voltage_finish_mode = False   # False = Time Mode, True = Current Mode
+control_mode = "POTENTIOSTATIC"
 
 if platform.system() != "Windows":
     # On Linux/OSX, use the Qt timer
@@ -462,12 +465,15 @@ def set_cell_status(cell_on_boolean):
 
 def set_control_mode(galvanostatic_boolean):
     """Switch the control mode (True = galvanostatic, False = potentiostatic)."""
+    global control_mode
     if galvanostatic_boolean:
         if send_command(b'GALVANOSTATIC', b'OK'):
             control_mode_monitor.setText("GALVANOSTATIC")
+            control_mode = "GALVANOSTATIC"
     else:
         if send_command(b'POTENTIOSTATIC', b'OK'):
             control_mode_monitor.setText("POTENTIOSTATIC")
+            control_mode = "POTENTIOSTATIC"
 
 
 def set_current_range():
@@ -861,6 +867,36 @@ def toggle_error_logging(checkbox_state):
     usb_debug_flag = (checkbox_state == 2)
 
 
+def toggle_voltage_finish(checkbox_state):
+    """Enable or disable constant voltage finishing during constant current tests"""
+    global cd_voltage_finish_flag
+    if cd_voltage_finish_flag == True:
+        cd_voltage_finish_flag = False
+        voltage_finish_time_radio.setEnabled(False)
+        voltage_finish_current_radio.setEnabled(False)
+        voltage_finish_time_entry.setEnabled(False)
+        voltage_finish_current_entry.setEnabled(False)
+    if checkbox_state == 2:
+        cd_voltage_finish_flag = True
+        voltage_finish_time_radio.setEnabled(True)
+        voltage_finish_current_radio.setEnabled(True)
+        voltage_finish_time_entry.setEnabled(True)
+
+
+def set_voltage_finish_mode():
+    global cd_voltage_finish_mode
+    if voltage_finish_time_radio.isChecked():
+        cd_voltage_finish_mode = False
+        voltage_finish_time_entry.setEnabled(True)
+        voltage_finish_current_entry.setEnabled(False)
+    if voltage_finish_current_radio.isChecked():
+        cd_voltage_finish_mode = True
+        voltage_finish_time_entry.setEnabled(False)
+        voltage_finish_current_entry.setEnabled(True)
+    else:
+        pass
+
+
 def cv_getparams():
     """Retrieve the CV parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
     global cv_parameters
@@ -1221,6 +1257,11 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tHalf-Cycle\n"""
 
 
 def cd_update():
+    # todo: implement voltage finish in this function.
+    # todo: Must switch from galvanostatic to potentiostatic model, then later back
+    # todo: need constant voltage held by either time or charge
+    # todo: need a flag or multiple flags (enable/disable voltage finish, and one for time/charge selection)
+    # todo: need expanded variables for cd_parameters --> cd_parameters['voltagefinish'] = True/False, etc
     """Add a new data point to the charge/discharge measurement (should be called regularly)."""
     global cd_currentsetpoint, cd_currentcycle, state
     elapsed_time = timeit.default_timer() - cd_starttime
@@ -1245,32 +1286,56 @@ def cd_update():
             charge = numpy.abs(scipy.integrate.cumtrapz(cd_current_data.averagebuffer, cd_time_data.averagebuffer,
                                                         initial=0.) / 3600.)  # Cumulative charge in Ah
             cd_plot_curves[cd_currentcycle - 1].setData(charge, cd_potential_data.averagebuffer)  # Update the graph
-        if (cd_currentsetpoint > 0 and potential > cd_parameters['ubound']) or (
-                cd_currentsetpoint < 0 and potential < cd_parameters['lbound']):  # A potential cut-off has been reached
-            log_message("Cycle %s Finished" % cd_currentcycle)
-            if cd_currentsetpoint == cd_parameters[
-                'chargecurrent']:  # Switch from the discharge phase to the charge phase or vice versa
-                cd_currentsetpoint = cd_parameters['dischargecurrent']
-            else:
-                cd_currentsetpoint = cd_parameters['chargecurrent']
-            hardware_manual_control_range_dropdown.setCurrentIndex(current_range_from_current(
-                cd_currentsetpoint))  # Determine the proper current range for the new setpoint
-            set_current_range()  # Set new current range
-            set_output(1, cd_currentsetpoint)  # Set current to setpoint
-            cd_plot_curves.append(plot_frame.plot(
-                pen=pen_color[
-                    cd_currentcycle % 7]))  # Start a new plot curve and append it to the plot area (keeping the old ones as well)
-            cd_charges.append(numpy.abs(numpy.trapz(cd_current_data.averagebuffer,
-                                                    cd_time_data.averagebuffer) / 3600.))  # Cumulative charge in Ah
-            if cd_currentcycle % 2 == 0:  # Write out the charge and discharge capacities after both a charge and discharge phase (i.e. after cycle 2, 4, 6...)
-                cd_outputfile_capacities.write("%d\t%e\t%e\n" % (
-                    cd_currentcycle / 2, cd_charges[cd_currentcycle - 2], cd_charges[cd_currentcycle - 1]))
-            for data in [cd_time_data, cd_potential_data,
-                         cd_current_data]:  # Clear average buffers to prepare them for the next cycle
-                data.clear()
-            cd_currentcycle += 1  # Next cycle
-            cd_current_cycle_entry.setText("%d" % cd_currentcycle)  # Indicate next cycle
+        if (cd_currentsetpoint > 0 and potential > cd_parameters['ubound']) or (cd_currentsetpoint < 0 and potential < cd_parameters['lbound']):  # A potential cut-off has been reached
+#----------------------------------------------------------------------------------------------------------------------
 
+            if cd_voltage_finish_flag == True:  # Voltage finish is enabled
+                if control_mode == "GALVANOSTATIC":
+                    set_control_mode(True) # Switch to potentiostatic control
+                if cd_voltage_finish_mode == False:  # Voltage finish is time mode
+                    if cd_currentsetpoint > 0:
+                        maintained_voltage = cd_parameters['ubound']
+                    else:
+                        maintained_voltage = cd_parameters['lbound']
+                    # if elapsed_time > cd_voltage_finish_time:
+
+
+
+
+                elif cd_voltage_finish_mode == True: # Voltage finish is current mode
+                    if cd_currentsetpoint > 0:
+                        maintained_voltage = cd_parameters['ubound']
+                    else:
+                        maintained_voltage = cd_parameters['lbound']
+
+                else:
+                    pass
+#----------------------------------------------------------------------------------------------------------------------
+            else:
+                log_message("Cycle %s Finished" % cd_currentcycle)
+                if cd_currentsetpoint == cd_parameters[
+                    'chargecurrent']:  # Switch from the discharge phase to the charge phase or vice versa
+                    cd_currentsetpoint = cd_parameters['dischargecurrent']
+                else:
+                    cd_currentsetpoint = cd_parameters['chargecurrent']
+                hardware_manual_control_range_dropdown.setCurrentIndex(current_range_from_current(
+                    cd_currentsetpoint))  # Determine the proper current range for the new setpoint
+                set_current_range()  # Set new current range
+                set_output(1, cd_currentsetpoint)  # Set current to setpoint
+                cd_plot_curves.append(plot_frame.plot(
+                    pen=pen_color[
+                        cd_currentcycle % 7]))  # Start a new plot curve and append it to the plot area (keeping the old ones as well)
+                cd_charges.append(numpy.abs(numpy.trapz(cd_current_data.averagebuffer,
+                                                        cd_time_data.averagebuffer) / 3600.))  # Cumulative charge in Ah
+                if cd_currentcycle % 2 == 0:  # Write out the charge and discharge capacities after both a charge and discharge phase (i.e. after cycle 2, 4, 6...)
+                    cd_outputfile_capacities.write("%d\t%e\t%e\n" % (
+                        cd_currentcycle / 2, cd_charges[cd_currentcycle - 2], cd_charges[cd_currentcycle - 1]))
+                for data in [cd_time_data, cd_potential_data,
+                             cd_current_data]:  # Clear average buffers to prepare them for the next cycle
+                    data.clear()
+                cd_currentcycle += 1  # Next cycle
+                cd_current_cycle_entry.setText("%d" % cd_currentcycle)  # Indicate next cycle
+            # ----------------------------------------------------------------------------------------------------------------------
 
 def cd_stop(interrupted=True):
     """Finish the charge/discharge measurement."""
@@ -1863,6 +1928,32 @@ cd_numcycles_entry = make_label_entry(cd_params_layout, "Number of half cycles")
 cd_numsamples_entry = make_label_entry(cd_params_layout, "Samples to average")
 cd_numsamples_entry.setText("5")
 
+voltage_finish_vbox = QtGui.QGroupBox(title="Voltage finish", flat=False)
+voltage_finish_vbox_layout = QtGui.QVBoxLayout()
+voltage_finish_vbox.setLayout(voltage_finish_vbox_layout)
+
+voltage_finish_box = QtGui.QGroupBox(title="", flat=False)
+finish_selection_layout = QtGui.QHBoxLayout()
+voltage_finish_box.setLayout(finish_selection_layout)
+
+voltage_finish_checkbox = QtGui.QCheckBox("Enable voltage finish")
+voltage_finish_checkbox.stateChanged.connect(toggle_voltage_finish)
+finish_selection_layout.addWidget(voltage_finish_checkbox)
+
+voltage_finish_time_radio = make_radio_entry(finish_selection_layout, "Time (s)")
+voltage_finish_current_radio = make_radio_entry(finish_selection_layout, "Current (µA)")
+voltage_finish_time_radio.setChecked(True)
+voltage_finish_time_radio.setEnabled(False)
+voltage_finish_current_radio.setEnabled(False)
+voltage_finish_time_radio.toggled.connect(lambda: set_voltage_finish_mode())
+
+voltage_finish_vbox_layout.addWidget(voltage_finish_box)
+voltage_finish_time_entry = make_label_entry(voltage_finish_vbox_layout, "Time (s)")
+voltage_finish_time_entry.setEnabled(False)
+voltage_finish_current_entry = make_label_entry(voltage_finish_vbox_layout, "Current (µA)")
+voltage_finish_current_entry.setEnabled(False)
+cd_params_layout.addWidget(voltage_finish_vbox)
+
 cd_params_layout.setSpacing(6)
 cd_params_layout.setContentsMargins(3, 10, 3, 3)
 cd_vbox.addWidget(cd_params_box)
@@ -2054,7 +2145,7 @@ tabs[4].setLayout(sequence_vbox)
 
 
 # ------------------------------------------------------------------------------------------
-# Pop-up Functions
+# Sequence Pop-up Functions
 
 
 def check_button():
@@ -2100,6 +2191,7 @@ def seq_cv_listing(self, listname):
     seq_cv_getparams(self)
     if seq_cv_getparams(self) and cv_validate_parameters() and validate_file(cv_parameters['filename']):
         listname.addItem(cv_parameters['filename']) # TODO: adapt this -> filename is usually the full directory NOT WANTED!
+        # todo: show parameters in list or give option to review test settings easily
         items = listname.findItems(cv_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
             for item in items:
