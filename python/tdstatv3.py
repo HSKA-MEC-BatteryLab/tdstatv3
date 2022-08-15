@@ -2314,6 +2314,10 @@ sequence_cvradio_entry.setChecked(True)
 sequence_cdradio_entry = make_radio_entry(sequence_radio_layout, "CCD")
 sequence_rateradio_entry = make_radio_entry(sequence_radio_layout, "Rate")
 # sequence_ocvradio_entry = make_radio_entry(sequence_radio_layout, "OCV") # Todo: add OCV functionality
+sequence_cvradio_entry.setEnabled(False)
+sequence_cdradio_entry.setEnabled(False)
+sequence_rateradio_entry.setEnabled(False)
+# sequence_ocvradio_entry.setEnabled(False)
 
 sequence_test_add_button = QtGui.QPushButton("Add Test")
 sequence_test_add_button.setEnabled(False)
@@ -2374,6 +2378,10 @@ def check_button():
     checkforentry = sequence_file_entry.text()
     if checkforentry:
         sequence_test_add_button.setEnabled(True)
+        sequence_cvradio_entry.setEnabled(True)
+        sequence_cdradio_entry.setEnabled(True)
+        sequence_rateradio_entry.setEnabled(True)
+        # sequence_ocvradio_entry.setEnabled(True)
 
 
 def call_list_popup():
@@ -2579,6 +2587,36 @@ class SequenceCD(QtGui.QWidget):
         self.sequence_cd_numcycles_entry = make_label_entry(sequence_cd_params_layout, "Number of half cycles")
         self.sequence_cd_numsamples_entry = make_label_entry(sequence_cd_params_layout, "Samples to average")
         self.sequence_cd_numsamples_entry.setText("5")
+
+        sequence_voltage_finish_vbox = QtGui.QGroupBox(title="Voltage finish", flat=False)
+        sequence_voltage_finish_vbox_layout = QtGui.QVBoxLayout()
+        sequence_voltage_finish_vbox.setLayout(sequence_voltage_finish_vbox_layout)
+
+        sequence_voltage_finish_box = QtGui.QGroupBox(title="", flat=False)
+        sequence_finish_selection_layout = QtGui.QHBoxLayout()
+        sequence_voltage_finish_box.setLayout(sequence_finish_selection_layout)
+
+        sequence_voltage_finish_checkbox = QtGui.QCheckBox("Enable voltage finish")
+        sequence_voltage_finish_checkbox.stateChanged.connect(toggle_voltage_finish)
+        sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_checkbox)
+
+        sequence_voltage_finish_time_radio = make_radio_entry(sequence_finish_selection_layout, "Time (s)")
+        sequence_voltage_finish_time_radio.setChecked(True)
+        sequence_voltage_finish_time_radio.setEnabled(False)
+        sequence_voltage_finish_current_radio = make_radio_entry(sequence_finish_selection_layout, "Current (µA)")
+        sequence_voltage_finish_current_radio.setEnabled(False)
+        sequence_voltage_finish_both_radio = make_radio_entry(sequence_finish_selection_layout, "Time and current")
+        sequence_voltage_finish_both_radio.setEnabled(False)
+        sequence_voltage_finish_time_radio.clicked.connect(lambda: set_voltage_finish_mode())
+        sequence_voltage_finish_current_radio.clicked.connect(lambda: set_voltage_finish_mode())
+        sequence_voltage_finish_both_radio.clicked.connect(lambda: set_voltage_finish_mode())
+
+        sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_box)
+        sequence_voltage_finish_time_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Time (s)")
+        sequence_voltage_finish_time_entry.setEnabled(False)
+        sequence_voltage_finish_current_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Current (µA)")
+        sequence_voltage_finish_current_entry.setEnabled(False)
+        sequence_cd_params_layout.addWidget(sequence_voltage_finish_vbox)
 
         sequence_cd_params_layout.setSpacing(6)
         sequence_cd_params_layout.setContentsMargins(3, 10, 3, 3)
