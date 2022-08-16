@@ -59,7 +59,6 @@ test_end = None
 cv_cycle = None
 cd_parameters = {}  # Dictionary to hold the charge/discharge parameters
 rate_parameters = {}  # Dictionary to hold the rate testing parameters
-test_sequence = {}
 overcounter, undercounter, skipcounter = 0, 0, 0  # Global counters used for automatic current ranging
 time_of_last_adcread = 0.
 adcread_interval = 0.09  # ADC sampling interval (in seconds)
@@ -71,6 +70,9 @@ cd_voltage_finish_mode = 0  # Possible Modes for voltage finish
 cd_voltage_finish_time = {"start_time": 0, "end_time": 0, "semaphore": False}  # Start time of constant voltage, semaphore flag for read/write operations
 cd_voltage_finish_current = {"start_current": 0, "end_current": 0, "semaphore": False}  # Start current of constant voltage, semaphore flag for read/write operations
 control_mode = "POTENTIOSTATIC"
+sequence_flag = False
+sequence_index = 0
+test_sequence = {}
 
 if platform.system() != "Windows":
     # On Linux/OSX, use the Qt timer
@@ -1735,6 +1737,22 @@ def rate_stop(interrupted=True):
         GraphAutoExport(plot_frame, rate_parameters['filename'])
 
 
+def toggle_sequence_flag():
+    global sequence_flag
+    if sequence_flag == False:
+        sequence_flag = True
+
+def sequence_start():
+    global test_sequence, sequence_index
+    print("sequence_testing")
+    print(test_sequence[sequence_index])
+    sequence_index += 1
+    print(sequence_index)
+    print(test_sequence[sequence_index])
+    print(f"test sequence length: {len(test_sequence)}")
+    sequence_flag = False
+
+
 # #--------------------------------------------------------------------------------------------------------------------
 '''Redefines the QMainWindow's closeEvent functionality. This allows us to monitor for the application window's close button to be pressed
 and to ask for confirmation first.'''
@@ -2344,9 +2362,9 @@ sequence_params_layout.addWidget(sequence_confirm_button)
 
 sequence_vbox.addWidget(sequence_params_box)
 
-sequence_start_button = QtGui.QPushButton("Start Rate Test")
+sequence_start_button = QtGui.QPushButton("Start Test Sequence")
 sequence_start_button.setEnabled(False)
-sequence_start_button.clicked.connect(rate_start)  #Todo: fix this
+sequence_start_button.clicked.connect(toggle_sequence_flag)  #Todo: fix this
 sequence_vbox.addWidget(sequence_start_button)
 
 sequence_stop_button = QtGui.QPushButton("Stop Rate Test")
@@ -2372,6 +2390,11 @@ tabs[4].setLayout(sequence_vbox)
 
 # ------------------------------------------------------------------------------------------
 # Sequence Pop-up Functions
+
+
+def sequence_start():
+    global state
+    state = States.Idle
 
 
 def check_button():
@@ -2436,7 +2459,7 @@ def seq_cv_listing(self, listname):
 
 def seq_cd_getparams(self):
     """Retrieve the charge/discharge parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
-    global cd_parameters
+    global cd_parameters, cd_voltage_finish_flag
     try:
         cd_parameters['lbound'] = float(self.sequence_cd_lbound_entry.text())
         cd_parameters['ubound'] = float(self.sequence_cd_ubound_entry.text())
@@ -2445,6 +2468,20 @@ def seq_cd_getparams(self):
         cd_parameters['numcycles'] = int(self.sequence_cd_numcycles_entry.text())
         cd_parameters['numsamples'] = int(self.sequence_cd_numsamples_entry.text())
         cd_parameters['filename'] = str(self.sequence_cd_file_entry.text())
+        if cd_voltage_finish_flag:
+            if cd_voltage_finish_mode == 0:
+                cd_parameters['finish_duration'] = int(self.sequence_voltage_finish_time_entry.text())
+                cd_parameters['current_duration'] = 0
+                print("cd mode 0 - cd_getparams")
+                print(cd_parameters['finish_duration'])
+            elif cd_voltage_finish_mode == 1:
+                cd_parameters['finish_duration'] = 0
+                cd_parameters['current_duration'] = int(self.sequence_voltage_finish_current_entry.text())
+                print("cd mode 1 - cd_getparams")
+            elif cd_voltage_finish_mode == 2:
+                cd_parameters['current_duration'] = int(self.sequence_voltage_finish_current_entry.text())
+                cd_parameters['finish_duration'] = int(self.sequence_voltage_finish_time_entry.text())
+                print("cd mode 2 - cd_getparams")
         return True
     except ValueError:
         QtGui.QMessageBox.critical(mainwidget, "Not a number",
@@ -2577,6 +2614,15 @@ class SequenceCD(QtGui.QWidget):
         format_box_for_parameter(sequence_cd_params_box)
         sequence_cd_params_layout = QtGui.QVBoxLayout()
         sequence_cd_params_box.setLayout(sequence_cd_params_layout)
+
+        sequence_voltage_finish_vbox = QtGui.QGroupBox(title="Voltage finish", flat=False)
+        sequence_voltage_finish_vbox_layout = QtGui.QVBoxLayout()
+        sequence_voltage_finish_vbox.setLayout(sequence_voltage_finish_vbox_layout)
+
+        sequence_voltage_finish_box = QtGui.QGroupBox(title="", flat=False)
+        sequence_finish_selection_layout = QtGui.QHBoxLayout()
+        sequence_voltage_finish_box.setLayout(sequence_finish_selection_layout)
+
         self.sequence_cd_file_entry = make_label_entry(sequence_cd_params_layout, "Filename (no directory)")
         self.sequence_cd_lbound_entry = make_label_entry(sequence_cd_params_layout, "Lower bound (V)")
         self.sequence_cd_ubound_entry = make_label_entry(sequence_cd_params_layout, "Upper bound (V)")
@@ -2588,34 +2634,42 @@ class SequenceCD(QtGui.QWidget):
         self.sequence_cd_numsamples_entry = make_label_entry(sequence_cd_params_layout, "Samples to average")
         self.sequence_cd_numsamples_entry.setText("5")
 
-        sequence_voltage_finish_vbox = QtGui.QGroupBox(title="Voltage finish", flat=False)
-        sequence_voltage_finish_vbox_layout = QtGui.QVBoxLayout()
-        sequence_voltage_finish_vbox.setLayout(sequence_voltage_finish_vbox_layout)
+        # sequence_voltage_finish_vbox = QtGui.QGroupBox(title="Voltage finish", flat=False)
+        # sequence_voltage_finish_vbox_layout = QtGui.QVBoxLayout()
+        # sequence_voltage_finish_vbox.setLayout(sequence_voltage_finish_vbox_layout)
 
-        sequence_voltage_finish_box = QtGui.QGroupBox(title="", flat=False)
-        sequence_finish_selection_layout = QtGui.QHBoxLayout()
-        sequence_voltage_finish_box.setLayout(sequence_finish_selection_layout)
+        # sequence_voltage_finish_box = QtGui.QGroupBox(title="", flat=False)
+        # sequence_finish_selection_layout = QtGui.QHBoxLayout()
+        # sequence_voltage_finish_box.setLayout(sequence_finish_selection_layout)
+        #
+        # sequence_voltage_finish_checkbox = QtGui.QCheckBox("Enable voltage finish")
+        # sequence_voltage_finish_checkbox.stateChanged.connect(self.seq_toggle_voltage_finish)
+        # sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_checkbox)
+
+        self.sequence_voltage_finish_time_radio = make_radio_entry(sequence_finish_selection_layout, "Time (s)")
+        self.sequence_voltage_finish_time_radio.setChecked(True)
+        self.sequence_voltage_finish_time_radio.setEnabled(False)
+        self.sequence_voltage_finish_current_radio = make_radio_entry(sequence_finish_selection_layout, "Current (µA)")
+        self.sequence_voltage_finish_current_radio.setEnabled(False)
+        self.sequence_voltage_finish_both_radio = make_radio_entry(sequence_finish_selection_layout, "Time and current")
+        self.sequence_voltage_finish_both_radio.setEnabled(False)
+        self.sequence_voltage_finish_time_radio.clicked.connect(lambda: self.seq_set_voltage_finish_mode())
+        self.sequence_voltage_finish_current_radio.clicked.connect(lambda: self.seq_set_voltage_finish_mode())
+        self.sequence_voltage_finish_both_radio.clicked.connect(lambda: self.seq_set_voltage_finish_mode())
+
+        # sequence_voltage_finish_box = QtGui.QGroupBox(title="", flat=False)
+        # sequence_finish_selection_layout = QtGui.QHBoxLayout()
+        # sequence_voltage_finish_box.setLayout(sequence_finish_selection_layout)
 
         sequence_voltage_finish_checkbox = QtGui.QCheckBox("Enable voltage finish")
-        sequence_voltage_finish_checkbox.stateChanged.connect(toggle_voltage_finish)
+        sequence_voltage_finish_checkbox.stateChanged.connect(self.seq_toggle_voltage_finish)
         sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_checkbox)
 
-        sequence_voltage_finish_time_radio = make_radio_entry(sequence_finish_selection_layout, "Time (s)")
-        sequence_voltage_finish_time_radio.setChecked(True)
-        sequence_voltage_finish_time_radio.setEnabled(False)
-        sequence_voltage_finish_current_radio = make_radio_entry(sequence_finish_selection_layout, "Current (µA)")
-        sequence_voltage_finish_current_radio.setEnabled(False)
-        sequence_voltage_finish_both_radio = make_radio_entry(sequence_finish_selection_layout, "Time and current")
-        sequence_voltage_finish_both_radio.setEnabled(False)
-        sequence_voltage_finish_time_radio.clicked.connect(lambda: set_voltage_finish_mode())
-        sequence_voltage_finish_current_radio.clicked.connect(lambda: set_voltage_finish_mode())
-        sequence_voltage_finish_both_radio.clicked.connect(lambda: set_voltage_finish_mode())
-
         sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_box)
-        sequence_voltage_finish_time_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Time (s)")
-        sequence_voltage_finish_time_entry.setEnabled(False)
-        sequence_voltage_finish_current_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Current (µA)")
-        sequence_voltage_finish_current_entry.setEnabled(False)
+        self.sequence_voltage_finish_time_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Time (s)")
+        self.sequence_voltage_finish_time_entry.setEnabled(False)
+        self.sequence_voltage_finish_current_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Current (µA)")
+        self.sequence_voltage_finish_current_entry.setEnabled(False)
         sequence_cd_params_layout.addWidget(sequence_voltage_finish_vbox)
 
         sequence_cd_params_layout.setSpacing(6)
@@ -2635,6 +2689,54 @@ class SequenceCD(QtGui.QWidget):
         cd_msg_box.setSpacing(6)
         cd_msg_box.setContentsMargins(3, 3, 3, 3)
         self.setLayout(cd_msg_box)
+
+    def seq_toggle_voltage_finish(cdwindow, checkbox_state):
+        """Enable or disable constant voltage finishing during constant current tests"""
+        global cd_voltage_finish_flag
+        if cd_voltage_finish_flag == True:
+            cd_voltage_finish_flag = False
+            cdwindow.sequence_voltage_finish_time_radio.setEnabled(False)
+            cdwindow.sequence_voltage_finish_current_radio.setEnabled(False)
+            cdwindow.sequence_voltage_finish_time_entry.setEnabled(False)
+            cdwindow.sequence_voltage_finish_current_entry.setEnabled(False)
+            cdwindow.sequence_voltage_finish_current_entry.setText("")
+            cdwindow.sequence_voltage_finish_time_entry.setText("")
+            cdwindow.sequence_voltage_finish_both_radio.setEnabled(False)
+        if checkbox_state == 2:
+            cd_voltage_finish_flag = True
+            cdwindow.sequence_voltage_finish_time_radio.setEnabled(True)
+            cdwindow.sequence_voltage_finish_current_radio.setEnabled(True)
+            cdwindow.sequence_voltage_finish_time_entry.setEnabled(True)
+            cdwindow.sequence_voltage_finish_time_entry.setText("")
+            cdwindow.sequence_voltage_finish_both_radio.setEnabled(True)
+
+    def seq_set_voltage_finish_mode(cdwindow):
+        global cd_voltage_finish_mode
+        if cdwindow.sequence_voltage_finish_time_radio.isChecked():
+            cd_voltage_finish_mode = 0
+            # print("voltage finish mode", cd_voltage_finish_mode)
+            cdwindow.sequence_voltage_finish_time_entry.setText("")
+            cdwindow.sequence_voltage_finish_current_entry.setText("")
+            cdwindow.sequence_voltage_finish_time_entry.setEnabled(False)
+            cdwindow.sequence_voltage_finish_time_entry.setEnabled(True)
+            cdwindow.sequence_voltage_finish_current_entry.setEnabled(False)
+        if cdwindow.sequence_voltage_finish_current_radio.isChecked():
+            cd_voltage_finish_mode = 1
+            # print("voltage finish mode", cd_voltage_finish_mode)
+            cdwindow.sequence_voltage_finish_time_entry.setText("")
+            cdwindow.sequence_voltage_finish_current_entry.setText("")
+            cdwindow.sequence_voltage_finish_time_entry.setEnabled(False)
+            cdwindow.sequence_voltage_finish_current_entry.setEnabled(False)
+            cdwindow.sequence_voltage_finish_current_entry.setEnabled(True)
+        if cdwindow.sequence_voltage_finish_both_radio.isChecked():
+            cd_voltage_finish_mode = 2
+            # print("voltage finish mode", cd_voltage_finish_mode)
+            # voltage_finish_time_entry.setText("")
+            # voltage_finish_current_entry.setText("")
+            cdwindow.sequence_voltage_finish_time_entry.setEnabled(True)
+            cdwindow.sequence_voltage_finish_current_entry.setEnabled(True)
+        else:
+            pass
 # ------------------------------------------------------------------------------------------
 # Rate Parameter Pop-up
 
@@ -2700,10 +2802,14 @@ mainwidget.setLayout(vbox)
 
 # main program body ----------------------------------------------------------------------------------------------------
 
+
+
 def periodic_update():  # A state machine is used to determine which functions need to be called, depending on the current state of the program
     if state == States.Idle_Init:
         idle_init()
     elif state == States.Idle:
+        if sequence_flag:
+            sequence_start()
         read_potential_current()
         update_live_graph()
     elif state == States.Measuring_CV:
