@@ -72,6 +72,7 @@ cd_voltage_finish_time = {"start_time": 0, "end_time": 0, "semaphore": False}  #
 cd_voltage_finish_current = {"start_current": 0, "end_current": 0, "semaphore": False}  # Start current of constant voltage, semaphore flag for read/write operations
 control_mode = "POTENTIOSTATIC"
 sequence_flag = False
+seq_cv_ocv_flag = False
 sequence_index = 0
 test_sequence = {}
 
@@ -139,8 +140,8 @@ class AverageBuffer:
 
 class States:
     """Expose a named list of states to be used as a simple state machine."""
-    NotConnected, Idle_Init, Idle, Measuring_Offset, Stationary_Graph, Measuring_CV, Measuring_CD, Measuring_Rate, Measuring_OCP = range(
-        9)
+    NotConnected, Idle_Init, Idle, Sequence_Idle, Measuring_Offset, Stationary_Graph, Measuring_CV, Measuring_CD, Measuring_Rate, Measuring_OCP = range(
+        10)
 
 
 state = States.NotConnected  # Initial state
@@ -825,10 +826,12 @@ def choose_file(file_entry_field, questionstring):
     """Open a file dialog and write the path of the selected file to a given entry field."""
     filedialog = QtGui.QFileDialog()
     # file_entry_field.setText(filedialog.getSaveFileName(mainwidget, questionstring, "", "ASCII data (*.txt)", options=QtGui.QFileDialog.DontConfirmOverwrite))  #original code
+    # ---------------------------------my code---------------------------------
     tempdirectory = filedialog.getSaveFileName(mainwidget, questionstring, "",
                                                "ASCII data (*.txt)")  # , options=QtGui.QFileDialog.DontConfirmOverwrite) #reenabling overwrite confirmation
     file_entry_field.setText(tempdirectory[0])  # getSaveFileName returns a tuple, so access first element!
-#
+    # ---------------------------------my code---------------------------------
+
 #
 # def add_test(widget_list, test):
 #     widget_list.addItem(test)
@@ -972,14 +975,15 @@ def cv_validate_parameters():
     return True
 
 
-def validate_file(filename):
+def validate_file(filename, overwrite_protect=True):
     """Check if a filename can be written to. If so, return True."""
     if os.path.isfile(filename):
-        if QtGui.QMessageBox.question(mainwidget, "File exists",
-                                      "The specified output file already exists. Do you want to overwrite it?",
-                                      QtGui.QMessageBox.Yes | QtGui.QMessageBox.No,
-                                      QtGui.QMessageBox.No) != QtGui.QMessageBox.Yes:
-            return False
+        if overwrite_protect:
+            if QtGui.QMessageBox.question(mainwidget, "File exists",
+                                          "The specified output file already exists. Do you want to overwrite it?",
+                                          QtGui.QMessageBox.Yes | QtGui.QMessageBox.No,
+                                          QtGui.QMessageBox.No) != QtGui.QMessageBox.Yes:
+                return False
     try:
         tryfile = open(filename, 'w', 1)
         tryfile.close()
@@ -1093,12 +1097,19 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tCycle\n"""
 
 
 def seq_cv_start():
-    """Initialize the CV measurement."""
+    """Initialize the CV measurement.""" # TODO: set seq_cv_ocv_flag state
     global cv_time_data, cv_potential_data, cv_current_data, cv_plot_curve, cv_outputfile, state, skipcounter, cv_parameters, test_start, test_end
+    print("seq_cv_start")
     if check_state(
-            [States.Idle, States.Stationary_Graph]) and sequence_flag and cv_validate_parameters() and validate_file(
-        cv_parameters['filename']):
+            [States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and cv_validate_parameters() and validate_file(
+        cv_parameters['filename'], overwrite_protect=False):
         seq_test_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        initialtime = cv_parameters['ubound'] - cv_parameters['startpot']
+        cycletime = (cv_parameters['ubound'] - cv_parameters['lbound']) * 2. * cv_parameters['numcycles']
+        finaltime = abs(cv_parameters['stoppot'] - cv_parameters['ubound'])
+        cv_parameters['duration'] = (initialtime + cycletime + finaltime) / (cv_parameters['scanrate'])# / 1000)
+
         cv_duration_text = duration_to_text_days_hours(cv_parameters['duration'])
         seq_test_end = datetime.datetime.now() + datetime.timedelta(seconds=cv_parameters['duration'])
         seq_cv_end_text = seq_test_end.strftime("%Y-%m-%d %H:%M:%S")
@@ -1197,7 +1208,9 @@ def cv_update():
 
 def cv_stop(interrupted=True):
     """Finish the CV measurement."""
-    global state
+    global state, seq_cv_ocv_flag, sequence_index, sequence_flag
+    sequence_index += 1
+    seq_cv_ocv_flag = False
     if check_state([States.Measuring_CV]):
         set_cell_status(False)  # Cell off
         cv_outputfile.close()
@@ -1211,8 +1224,11 @@ def cv_stop(interrupted=True):
             log_message("CV measurement finished. Calculated charges (in uAh): [" + ', '.join(
                 "%.2f" % value for value in
                 charge_arr) + "]")  # Show calculated charges in the message log
-        state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
-        preview_cancel_button.show()
+        if sequence_flag == False:
+            state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
+            preview_cancel_button.show()
+        if sequence_flag == True:
+            state = States.Sequence_Idle
         GraphAutoExport(plot_frame, cv_parameters['filename'])
 # TODO: figure out the error in displaying the integral from charge_arr
 
@@ -1256,6 +1272,7 @@ def preview_cancel():
 def cv_get_ocp():
     """Insert the currently measured (open-circuit) potential into the start potential input field."""
     cv_startpot_entry.setText('%5.3f' % potential)
+    return potential
 
 
 def cd_getparams():
@@ -1395,9 +1412,10 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tHalf-Cycle\n"""
 def seq_cd_start():
     """Initialize the charge/discharge measurement."""
     global cd_charges, cd_currentsetpoint, cd_starttime, cd_currentcycle, cd_time_data, cd_potential_data, cd_current_data, cd_plot_curves, cd_outputfile_raw, cd_outputfile_capacities, state, cd_in_finishing
+    print("seq_cd_start")
     if check_state(
-            [States.Idle, States.Stationary_Graph]) and sequence_flag and cd_validate_parameters() and validate_file(
-        cd_parameters['filename']):
+            [States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and cd_validate_parameters() and validate_file(
+        cd_parameters['filename'], overwrite_protect=False):
         cd_currentcycle = 1
         cd_charges = []
         cd_plot_curves = []
@@ -1634,7 +1652,8 @@ def cd_update():
 
 def cd_stop(interrupted=True):
     """Finish the charge/discharge measurement."""
-    global state
+    global state, sequence_index
+    sequence_index += 1
     if check_state([States.Measuring_CD]):
         set_cell_status(False)  # Cell off
         cd_outputfile_raw.close()
@@ -1648,8 +1667,11 @@ def cd_stop(interrupted=True):
                 "%.2f" % (value * 1e6) for value in
                 cd_charges) + "]")  # Print list of inserted/extracted charges to the message log
         cd_current_cycle_entry.setText("")  # Clear cycle indicator
-        state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
-        preview_cancel_button.show()
+        if sequence_flag == False:
+            state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
+            preview_cancel_button.show()
+        if sequence_flag == True:
+            state = States.Sequence_Idle
         GraphAutoExport(plot_frame, cd_parameters['filename'])
 
 
@@ -1743,9 +1765,9 @@ def rate_start():
 def seq_rate_start():
     """Initialize the rate testing measurement."""
     global state, crate_index, rate_halfcycle_countdown, rate_chg_charges, rate_dis_charges, rate_outputfile_raw, rate_outputfile_capacities, rate_starttime, rate_time_data, rate_potential_data, rate_current_data, rate_plot_scatter_chg, rate_plot_scatter_dis, legend
-    if check_state([States.Idle,
-                    States.Stationary_Graph]) and sequence_flag and rate_validate_parameters() and validate_file(
-        rate_parameters['filename']):
+    print("seq_rate_start")
+    if check_state([States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and rate_validate_parameters() and validate_file(
+        rate_parameters['filename'], overwrite_protect=False):
         crate_index = 0  # Index in the list of C-rates
         rate_halfcycle_countdown = 2 * rate_parameters['numcycles']  # Holds amount of remaining half cycles
         rate_chg_charges = []  # List of measured charge capacities
@@ -1849,7 +1871,8 @@ def rate_update():
 
 def rate_stop(interrupted=True):
     """Finish the rate testing measurement."""
-    global state
+    global state, sequence_index
+    sequence_index += 1
     if check_state([States.Measuring_Rate]):
         state = States.Idle_Init
         set_cell_status(False)  # Cell off
@@ -1860,8 +1883,11 @@ def rate_stop(interrupted=True):
         else:
             log_message("Rate testing finished.")
         rate_current_crate_entry.setText("")  # Clear C-rate indicator
-        state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
-        preview_cancel_button.show()
+        if sequence_flag == False:
+            state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
+            preview_cancel_button.show()
+        if sequence_flag == True:
+            state = States.Sequence_Idle
         GraphAutoExport(plot_frame, rate_parameters['filename'])
 
 
@@ -1947,7 +1973,8 @@ def ocp_update():
 
 
 def ocp_stop(interrupted=True):
-    global state
+    global state, sequence_index
+    sequence_index += 1
     if check_state([States.Measuring_OCP]):
         state = States.Idle_Init
         set_cell_status(False)
@@ -1956,14 +1983,18 @@ def ocp_stop(interrupted=True):
             log_message("OCP measurement interrupted.")
         else:
             log_message("OCP measurement finished.")
-        state = States.Stationary_Graph
-        preview_cancel_button.show()
+        if sequence_flag == False:
+            state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
+            preview_cancel_button.show()
+        if sequence_flag == True:
+            state = States.Sequence_Idle
         GraphAutoExport(plot_frame, ocp_parameters['filename'])
 
 
 def seq_ocp_start():
     global state, ocp_outputfile, ocp_plot_curve, ocp_time_data, ocp_potential_data, potential_buffer
-    if check_state([States.Idle, States.Stationary_Graph]) and sequence_flag and ocp_validate_parameters() and validate_file(ocp_parameters['filename']):
+    print("seq_ocp_start")
+    if check_state([States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and ocp_validate_parameters() and validate_file(ocp_parameters['filename'], overwrite_protect=False):
         ocp_starttime_text = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ocp_endtime = datetime.datetime.now() + datetime.timedelta(seconds=ocp_parameters['duration'])
         ocp_end_text = ocp_endtime.strftime("%Y-%m-%d %H:%M:%S")
@@ -2005,63 +2036,133 @@ def toggle_sequence_flag():
 
 
 def sequence_start():
-    global test_sequence, sequence_index, sequence_flag, cd_voltage_finish_flag
+    global test_sequence, sequence_index, sequence_flag, cd_voltage_finish_flag, seq_cv_ocv_flag, state
     sequence_confirm_button.setEnabled(False)
     sequence_flag = True
-    print("sequence_start")
+    log_message("Sequence started")
+    # print("test_sequence: ", test_sequence)
     if sequence_index >= len(test_sequence):
         sequence_flag = False
         log_message("Sequence finished.")
-    for i in test_sequence:
-        if sequence_index == test_sequence[i]['test_key']:
-            sequence_index += 1
-            if test_sequence[i]['test_type'] == 'CV':
-                cv_parameters['lbound'] = test_sequence[i]['lbound']
-                cv_parameters['ubound'] = test_sequence[i]['ubound']
-                cv_parameters['startpot'] = test_sequence[i]['startpot']
-                cv_parameters['stoppot'] = test_sequence[i]['stoppot']
-                cv_parameters['scanrate'] = test_sequence[i]['scanrate']
-                cv_parameters['numcycles'] = test_sequence[i]['numcycles']
-                cv_parameters['numsamples'] = test_sequence[i]['numsamples']
-                cv_parameters['filename'] = test_sequence[i]['filename']
-                seq_cv_start()
+        state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
+        preview_cancel_button.show()
+        return
+    # for i in test_sequence:  # Todo: this for loop is breaking things. Return also breaks things.
+    #     if sequence_index == test_sequence[i]['test_key']:
+    #         sequence_index += 1
+    #         if test_sequence[i]['test_type'] == 'CV':
+    #             cv_parameters['lbound'] = test_sequence[i]['lbound']
+    #             cv_parameters['ubound'] = test_sequence[i]['ubound']
+    #             if cv_parameters['auto_ocv'] == True:
+    #                 seq_cv_ocv_flag = True
+    #                 cv_parameters['startpot'] = cv_get_ocp()
+    #             elif cv_parameters['auto_ocv'] == False:
+    #                 seq_cv_ocv_flag = False
+    #                 cv_parameters['startpot'] = test_sequence[i]['startpot']
+    #             cv_parameters['stoppot'] = test_sequence[i]['stoppot']
+    #             cv_parameters['scanrate'] = test_sequence[i]['scanrate']
+    #             cv_parameters['numcycles'] = test_sequence[i]['numcycles']
+    #             cv_parameters['numsamples'] = test_sequence[i]['numsamples']
+    #             cv_parameters['filename'] = test_sequence[i]['filename']
+    #             print(f"Starting CV: {cv_parameters['filename']}")
+    #             seq_cv_start()
+    #
+    #         elif test_sequence[i]['test_type'] == 'CCD':
+    #             cd_parameters['lbound'] = test_sequence[i]['lbound']
+    #             cd_parameters['ubound'] = test_sequence[i]['ubound']
+    #             cd_parameters['chargecurrent'] = test_sequence[i]['chargecurrent']
+    #             cd_parameters['dischargecurrent'] = test_sequence[i]['dischargecurrent']
+    #             cd_parameters['numcycles'] = test_sequence[i]['numcycles']
+    #             cd_parameters['numsamples'] = test_sequence[i]['numsamples']
+    #             cd_parameters['filename'] = test_sequence[i]['filename']
+    #             cd_voltage_finish_flag = test_sequence[i]['voltage_finish_flag']
+    #             if cd_voltage_finish_flag:
+    #                 if test_sequence[i]['voltage_finish_mode'] == 0:
+    #                     cd_parameters['finish_duration'] = test_sequence[i]['finish_duration']
+    #                     cd_parameters['current_duration'] = 0
+    #                 elif test_sequence[i]['voltage_finish_mode'] == 1:
+    #                     cd_parameters['finish_duration'] = 0
+    #                     cd_parameters['current_duration'] = test_sequence[i]['current_duration']
+    #                 elif test_sequence[i]['voltage_finish_mode'] == 2:
+    #                     cd_parameters['finish_duration'] = test_sequence[i]['finish_duration']
+    #                     cd_parameters['current_duration'] = test_sequence[i]['current_duration']
+    #             print(f"Starting CCD: {cd_parameters['filename']}")
+    #             seq_cd_start()
+    #         elif test_sequence[i]['test_type'] == 'Rate':
+    #             rate_parameters['lbound'] = test_sequence[i]['lbound']
+    #             rate_parameters['ubound'] = test_sequence[i]['ubound']
+    #             rate_parameters['one_c_current'] = test_sequence[i]['one_c_current']
+    #             rate_parameters['crates'] = test_sequence[i]['crates']
+    #             rate_parameters['currents'] = test_sequence[i]['currents']
+    #             rate_parameters['numcycles'] = test_sequence[i]['numcycles']
+    #             rate_parameters['filename'] = test_sequence[i]['filename']
+    #             print(f"Starting Rate: {rate_parameters['filename']}")
+    #             seq_rate_start()
+    #         elif test_sequence[i]['test_type'] == 'OCP':
+    #             ocp_parameters['duration'] = test_sequence[i]['duration']
+    #             ocp_parameters['numsamples'] = test_sequence[i]['numsamples']
+    #             ocp_parameters['filename'] = test_sequence[i]['filename']
+    #             print(f"Starting OCP: {ocp_parameters['filename']}")
+    #             seq_ocp_start()
+    #         else:
+    #             pass
+    if test_sequence[sequence_index]['test_type'] == 'CV':
+        cv_parameters['lbound'] = test_sequence[sequence_index]['lbound']
+        cv_parameters['ubound'] = test_sequence[sequence_index]['ubound']
+        if test_sequence[sequence_index]['auto_ocv'] == True:
+            seq_cv_ocv_flag = True
+            cv_parameters['startpot'] = cv_get_ocp()
+            print(f"OCV: {cv_parameters['startpot']}")
+        elif test_sequence[sequence_index]['auto_ocv'] == False:
+            seq_cv_ocv_flag = False
+            cv_parameters['startpot'] = test_sequence[sequence_index]['startpot']
+        cv_parameters['stoppot'] = test_sequence[sequence_index]['stoppot']
+        cv_parameters['scanrate'] = test_sequence[sequence_index]['scanrate']
+        cv_parameters['numcycles'] = test_sequence[sequence_index]['numcycles']
+        cv_parameters['numsamples'] = test_sequence[sequence_index]['numsamples']
+        cv_parameters['filename'] = test_sequence[sequence_index]['filename']
+        print(f"Starting CV: {cv_parameters['filename']}")
+        seq_cv_start()
 
-            elif test_sequence[i]['test_type'] == 'CCD':
-                cd_parameters['lbound'] = test_sequence[i]['lbound']
-                cd_parameters['ubound'] = test_sequence[i]['ubound']
-                cd_parameters['chargecurrent'] = test_sequence[i]['chargecurrent']
-                cd_parameters['dischargecurrent'] = test_sequence[i]['dischargecurrent']
-                cd_parameters['numcycles'] = test_sequence[i]['numcycles']
-                cd_parameters['numsamples'] = test_sequence[i]['numsamples']
-                cd_parameters['filename'] = test_sequence[i]['filename']
-                cd_voltage_finish_flag = test_sequence[i]['voltage_finish_flag']
-                if cd_voltage_finish_flag:
-                    if test_sequence[i]['voltage_finish_mode'] == 0:
-                        cd_parameters['finish_duration'] = test_sequence[i]['finish_duration']
-                        cd_parameters['current_duration'] = 0
-                    elif test_sequence[i]['voltage_finish_mode'] == 1:
-                        cd_parameters['finish_duration'] = 0
-                        cd_parameters['current_duration'] = test_sequence[i]['current_duration']
-                    elif test_sequence[i]['voltage_finish_mode'] == 2:
-                        cd_parameters['finish_duration'] = test_sequence[i]['finish_duration']
-                        cd_parameters['current_duration'] = test_sequence[i]['current_duration']
-                seq_cd_start()
-            elif test_sequence[i]['test_type'] == 'Rate':
-                rate_parameters['lbound'] = test_sequence[i]['lbound']
-                rate_parameters['ubound'] = test_sequence[i]['ubound']
-                rate_parameters['one_c_current'] = test_sequence[i]['one_c_current']
-                rate_parameters['crates'] = test_sequence[i]['crates']
-                rate_parameters['currents'] = test_sequence[i]['currents']
-                rate_parameters['numcycles'] = test_sequence[i]['numcycles']
-                rate_parameters['filename'] = test_sequence[i]['filename']
-                seq_rate_start()
-            elif test_sequence[i]['test_type'] == 'OCP':
-                ocp_parameters['duration'] = test_sequence[i]['duration']
-                ocp_parameters['numsamples'] = test_sequence[i]['numsamples']
-                ocp_parameters['filename'] = test_sequence[i]['filename']
-                seq_ocp_start()
-            else:
-                pass
+    elif test_sequence[sequence_index]['test_type'] == 'CCD':
+        cd_parameters['lbound'] = test_sequence[sequence_index]['lbound']
+        cd_parameters['ubound'] = test_sequence[sequence_index]['ubound']
+        cd_parameters['chargecurrent'] = test_sequence[sequence_index]['chargecurrent']
+        cd_parameters['dischargecurrent'] = test_sequence[sequence_index]['dischargecurrent']
+        cd_parameters['numcycles'] = test_sequence[sequence_index]['numcycles']
+        cd_parameters['numsamples'] = test_sequence[sequence_index]['numsamples']
+        cd_parameters['filename'] = test_sequence[sequence_index]['filename']
+        cd_voltage_finish_flag = test_sequence[sequence_index]['voltage_finish_flag']
+        if cd_voltage_finish_flag:
+            if test_sequence[sequence_index]['voltage_finish_mode'] == 0:
+                cd_parameters['finish_duration'] = test_sequence[sequence_index]['finish_duration']
+                cd_parameters['current_duration'] = 0
+            elif test_sequence[sequence_index]['voltage_finish_mode'] == 1:
+                cd_parameters['finish_duration'] = 0
+                cd_parameters['current_duration'] = test_sequence[sequence_index]['current_duration']
+            elif test_sequence[sequence_index]['voltage_finish_mode'] == 2:
+                cd_parameters['finish_duration'] = test_sequence[sequence_index]['finish_duration']
+                cd_parameters['current_duration'] = test_sequence[sequence_index]['current_duration']
+        print(f"Starting CCD: {cd_parameters['filename']}")
+        seq_cd_start()
+    elif test_sequence[sequence_index]['test_type'] == 'Rate':
+        rate_parameters['lbound'] = test_sequence[sequence_index]['lbound']
+        rate_parameters['ubound'] = test_sequence[sequence_index]['ubound']
+        rate_parameters['one_c_current'] = test_sequence[sequence_index]['one_c_current']
+        rate_parameters['crates'] = test_sequence[sequence_index]['crates']
+        rate_parameters['currents'] = test_sequence[sequence_index]['currents']
+        rate_parameters['numcycles'] = test_sequence[sequence_index]['numcycles']
+        rate_parameters['filename'] = test_sequence[sequence_index]['filename']
+        print(f"Starting Rate: {rate_parameters['filename']}")
+        seq_rate_start()
+    elif test_sequence[sequence_index]['test_type'] == 'OCP':
+        ocp_parameters['duration'] = test_sequence[sequence_index]['duration']
+        ocp_parameters['numsamples'] = test_sequence[sequence_index]['numsamples']
+        ocp_parameters['filename'] = test_sequence[sequence_index]['filename']
+        print(f"Starting OCP: {ocp_parameters['filename']}")
+        seq_ocp_start()
+    else:
+        print("Error: Test type not recognized")
 #-----------------------------------------------------------------------------------------------------------------------
 
 
@@ -2725,11 +2826,11 @@ sequence_start_button.clicked.connect(lambda: sequence_start())
 sequence_vbox.addWidget(sequence_start_button)
 
 sequence_test_stop_button = QtGui.QPushButton("Stop Current Test")
-sequence_test_stop_button.clicked.connect(lambda: rate_stop(interrupted=True))  # Todo: fix this
+sequence_test_stop_button.clicked.connect(lambda: seq_skip_test())  # Todo: fix this
 sequence_vbox.addWidget(sequence_test_stop_button)
 
 sequence_stop_button = QtGui.QPushButton("Stop Test Sequence")
-sequence_stop_button.clicked.connect(lambda: rate_stop(interrupted=True))  # Todo: fix this
+sequence_stop_button.clicked.connect(lambda: seq_stop_all())  # Todo: fix this
 sequence_vbox.addWidget(sequence_stop_button)
 
 sequence_vbox.setSpacing(6)
@@ -2777,22 +2878,27 @@ def call_list_popup():
 
 def seq_cv_getparams(self):
     """Retrieve the CV parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
-    global cv_parameters
+    global cv_parameters, seq_cv_ocv_flag
     try:
         cv_parameters['lbound'] = float(self.sequence_cv_lbound_entry.text())
         cv_parameters['ubound'] = float(self.sequence_cv_ubound_entry.text())
-        cv_parameters['startpot'] = float(self.sequence_cv_startpot_entry.text())
+        if seq_cv_ocv_flag:
+            cv_parameters['auto_ocv'] = True
+            cv_parameters['startpot'] = 0 #  This is a dummy value, used to pass cv_validate_parameters
+        else:
+            cv_parameters['startpot'] = float(self.sequence_cv_startpot_entry.text())
+            cv_parameters['auto_ocv'] = False
         cv_parameters['stoppot'] = float(self.sequence_cv_stoppot_entry.text())
         cv_parameters['scanrate'] = float(self.sequence_cv_scanrate_entry.text()) / 1e3  # Convert to V/s
         cv_parameters['numcycles'] = int(self.sequence_cv_numcycles_entry.text())
         cv_parameters['numsamples'] = int(self.sequence_cv_numsamples_entry.text())
         cv_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_cv_file_entry.text()) + ".csv"
-        initialtime = cv_parameters['ubound'] - cv_parameters['startpot']
-        cycletime = (cv_parameters['ubound'] - cv_parameters['lbound']) * 2. * cv_parameters['numcycles']
-        finaltime = abs(cv_parameters['stoppot'] - cv_parameters['ubound'])
-        cv_parameters['duration'] = (initialtime + cycletime + finaltime) / (cv_parameters['scanrate'])# / 1000)
-        print(f'duration: {cv_parameters["duration"]}')
-        # cv_duration_text = duration_to_text_days_hours(cv_parameters['duration'])
+        # initialtime = cv_parameters['ubound'] - cv_parameters['startpot']
+        # cycletime = (cv_parameters['ubound'] - cv_parameters['lbound']) * 2. * cv_parameters['numcycles']
+        # finaltime = abs(cv_parameters['stoppot'] - cv_parameters['ubound'])
+        # cv_parameters['duration'] = (initialtime + cycletime + finaltime) / (cv_parameters['scanrate'])# / 1000)
+        # print(f'duration: {cv_parameters["duration"]}')
+        # # cv_duration_text = duration_to_text_days_hours(cv_parameters['duration'])
         return True
     except ValueError:
         QtGui.QMessageBox.critical(mainwidget, "Not a number",
@@ -2801,9 +2907,9 @@ def seq_cv_getparams(self):
 
 
 def seq_cv_listing(self, listname):
-    global cv_parameters
+    global cv_parameters, seq_cv_ocv_flag
     seq_cv_getparams(self)
-    if seq_cv_getparams(self) and cv_validate_parameters() and validate_file(cv_parameters['filename']):
+    if seq_cv_getparams(self) and cv_validate_parameters() and validate_file(cv_parameters['filename'], overwrite_protect=True):
         listname.addItem(cv_parameters['filename']) # TODO: adapt this -> filename is usually the full directory NOT WANTED!
         # todo: show parameters in list or give option to review test settings easily
         items = listname.findItems(cv_parameters['filename'], QtCore.Qt.MatchExactly)
@@ -2814,6 +2920,7 @@ def seq_cv_listing(self, listname):
         test_sequence[i]['test_key'] = i
         test_sequence[i]['test_type'] = 'CV'
         test_sequence[i].update(cv_parameters)
+        seq_cv_ocv_flag = False
         self.close()
 
 
@@ -2859,7 +2966,7 @@ def seq_cd_getparams(self):
 def seq_cd_listing(self, listname):
     global cd_parameters
     seq_cd_getparams(self)
-    if seq_cd_getparams(self) and cd_validate_parameters() and validate_file(cd_parameters['filename']):
+    if seq_cd_getparams(self) and cd_validate_parameters() and validate_file(cd_parameters['filename'], overwrite_protect=True):
         listname.addItem(cd_parameters['filename'])
         items = listname.findItems(cd_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
@@ -2895,7 +3002,7 @@ def seq_rate_getparams(self):
 def seq_rate_listing(self, listname):
     global rate_parameters
     seq_rate_getparams(self)
-    if seq_rate_getparams(self) and rate_validate_parameters() and validate_file(rate_parameters['filename']):
+    if seq_rate_getparams(self) and rate_validate_parameters() and validate_file(rate_parameters['filename'], overwrite_protect=True):
         listname.addItem(rate_parameters['filename'])
         items = listname.findItems(rate_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
@@ -2912,7 +3019,7 @@ def seq_rate_listing(self, listname):
 def seq_ocp_listing(self, listname):
     global ocp_parameters
     seq_ocp_getparams(self)
-    if seq_ocp_getparams(self) and ocp_validate_parameters() and validate_file(ocp_parameters['filename']):
+    if seq_ocp_getparams(self) and ocp_validate_parameters() and validate_file(ocp_parameters['filename'], overwrite_protect=True):
         listname.addItem(ocp_parameters['filename'])
         items = listname.findItems(ocp_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
@@ -2940,6 +3047,33 @@ def seq_ocp_getparams(self):
         return False
 
 
+def seq_skip_test():
+    global state
+    # NotConnected, Idle_Init, Idle, Measuring_Offset, Stationary_Graph, Measuring_CV, Measuring_CD, Measuring_Rate, Measuring_OCP
+    if state == States.Measuring_CV:
+        cv_stop(interrupted=True)
+    elif state == States.Measuring_CD:
+        cd_stop(interrupted=True)
+    elif state == States.Measuring_Rate:
+        rate_stop(interrupted=True)
+    elif state == States.Measuring_OCP:
+        ocp_stop(interrupted=True)
+
+def seq_stop_all():
+    global state, sequence_flag
+    sequence_flag = False
+    # NotConnected, Idle_Init, Idle, Measuring_Offset, Stationary_Graph, Measuring_CV, Measuring_CD, Measuring_Rate, Measuring_OCP
+    if state == States.Measuring_CV:
+        cv_stop(interrupted=True)
+    elif state == States.Measuring_CD:
+        cd_stop(interrupted=True)
+    elif state == States.Measuring_Rate:
+        rate_stop(interrupted=True)
+    elif state == States.Measuring_OCP:
+        ocp_stop(interrupted=True)
+
+
+
 # ------------------------------------------------------------------------------------------
 # CV Parameter Pop-up
 
@@ -2962,14 +3096,19 @@ class SequenceCV(QtGui.QWidget):
         sequence_cv_hbox = QtGui.QHBoxLayout()
         sequence_cv_label = QtGui.QLabel(text="Start potential (V)")
         self.sequence_cv_startpot_entry = QtGui.QLineEdit()
-        sequence_cv_get_button = QtGui.QPushButton("OCV") # TODO: OCV Button necessary? Remove?
-        sequence_cv_get_button.setFont(custom_size_font(8))
-        sequence_cv_get_button.setFixedWidth(32)
-        sequence_cv_get_button.clicked.connect(cv_get_ocp)
+        # sequence_cv_get_button = QtGui.QPushButton("OCV")
+        # sequence_cv_get_button.setFont(custom_size_font(8))
+        # sequence_cv_get_button.setFixedWidth(32)
+        # sequence_cv_get_button.clicked.connect(cv_get_ocp)
+
+        sequence_cv_ocv_checkbox = QtGui.QCheckBox("Start CV at OCV")
+        sequence_cv_ocv_checkbox.stateChanged.connect(self.seq_toggle_automatic_ocv)
+        # sequence_voltage_finish_vbox_layout.addWidget(sequence_cv_ocv_checkbox)
 
         sequence_cv_hbox.addWidget(sequence_cv_label)
         sequence_cv_hbox.addWidget(self.sequence_cv_startpot_entry)
-        sequence_cv_hbox.addWidget(sequence_cv_get_button)
+        # sequence_cv_hbox.addWidget(sequence_cv_get_button)
+        sequence_cv_hbox.addWidget(sequence_cv_ocv_checkbox)
         sequence_cv_params_layout.addLayout(sequence_cv_hbox)
 
         self.sequence_cv_stoppot_entry = make_label_entry(sequence_cv_params_layout, "Stop potential (V)")
@@ -2997,6 +3136,20 @@ class SequenceCV(QtGui.QWidget):
         cv_msg_box.setSpacing(6)
         cv_msg_box.setContentsMargins(3, 3, 3, 3)
         self.setLayout(cv_msg_box)
+
+    def seq_toggle_automatic_ocv(cvwindow, checkbox_state):
+        """Enable or disable constant voltage finishing during constant current tests"""
+        global seq_cv_ocv_flag
+        if seq_cv_ocv_flag == True:
+            seq_cv_ocv_flag = False
+            cvwindow.sequence_cv_startpot_entry.setEnabled(True)
+            # print("CV OCV disabled")
+            return
+        if seq_cv_ocv_flag == False:
+            seq_cv_ocv_flag = True
+            cvwindow.sequence_cv_startpot_entry.setEnabled(False)
+            # print("CV OCV enabled")
+            return
 
 # ------------------------------------------------------------------------------------------
 # CCD Parameter Pop-up
@@ -3159,8 +3312,7 @@ class SequenceRate(QtGui.QWidget):
         rate_msg_box.setContentsMargins(3, 3, 3, 3)
         self.setLayout(rate_msg_box)
 # ------------------------------------------------------------------------------------------
-# OCV Parameter Pop-up (to be implemented later)
-
+# OCV Parameter Pop-up
 
 class SequenceOCP(QtGui.QWidget):
     def __init__(self):
@@ -3175,6 +3327,7 @@ class SequenceOCP(QtGui.QWidget):
         self.sequence_ocp_file_entry = make_label_entry(sequence_ocp_params_layout, "Filename (no directory)")
         self.sequence_ocp_duration_entry = make_label_entry(sequence_ocp_params_layout, "Duration (S)")
         self.sequence_ocp_numsamples_entry = make_label_entry(sequence_ocp_params_layout, "Samples to average")
+        self.sequence_ocp_numsamples_entry.setText("5")
         sequence_ocp_params_layout.setSpacing(6)
         sequence_ocp_params_layout.setContentsMargins(3, 10, 3, 3)
         ocp_msg_box.addWidget(sequence_ocp_params_box)
@@ -3214,13 +3367,14 @@ mainwidget.setLayout(vbox)
 
 
 def periodic_update():  # A state machine is used to determine which functions need to be called, depending on the current state of the program
+    global sequence_flag, state
     if state == States.Idle_Init:
         idle_init()
     elif state == States.Idle:
-        # if sequence_flag:
-        #     sequence_start()
         read_potential_current()
         update_live_graph()
+    elif state == States.Sequence_Idle:
+        sequence_start()
     elif state == States.Measuring_CV:
         cv_update()
     elif state == States.Measuring_CD:
