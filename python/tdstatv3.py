@@ -851,8 +851,9 @@ def remove_test(widget_list, index):
         #     i = i + 1
 
 
-
 def confirm_test():
+    global sequence_index
+    sequence_index = 0
     i = 0
     for key in test_sequence:
         test_sequence[key]['test_key'] = i
