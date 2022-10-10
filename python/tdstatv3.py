@@ -2825,7 +2825,7 @@ sequence_start_button.setEnabled(False)
 sequence_start_button.clicked.connect(lambda: sequence_start())
 sequence_vbox.addWidget(sequence_start_button)
 
-sequence_test_stop_button = QtGui.QPushButton("Stop Current Test")
+sequence_test_stop_button = QtGui.QPushButton("Skip Current Test")
 sequence_test_stop_button.clicked.connect(lambda: seq_skip_test())  # Todo: fix this
 sequence_vbox.addWidget(sequence_test_stop_button)
 
@@ -3080,6 +3080,8 @@ def seq_stop_all():
 
 class SequenceCV(QtGui.QWidget):
     def __init__(self):
+        global seq_cv_ocv_flag
+        seq_cv_ocv_flag = False
         super().__init__()
 
         cv_msg_box = QtGui.QVBoxLayout()
@@ -3363,8 +3365,6 @@ mainwidget.setLayout(vbox)
 
 
 # main program body ----------------------------------------------------------------------------------------------------
-
-
 
 def periodic_update():  # A state machine is used to determine which functions need to be called, depending on the current state of the program
     global sequence_flag, state
