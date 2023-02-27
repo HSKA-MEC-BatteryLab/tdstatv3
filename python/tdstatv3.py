@@ -61,6 +61,7 @@ cv_cycle = None
 cd_parameters = {}  # Dictionary to hold the charge/discharge parameters
 rate_parameters = {}  # Dictionary to hold the rate testing parameters
 ocp_parameters = {}
+temp_parameters = {}
 overcounter, undercounter, skipcounter = 0, 0, 0  # Global counters used for automatic current ranging
 time_of_last_adcread = 0.
 adcread_interval = 0.09  # ADC sampling interval (in seconds)
@@ -77,6 +78,7 @@ seq_cv_ocv_flag = False
 sequence_index = 0
 test_sequence = {}
 settling_counter = 5
+temp_sensor_type = True  #True PT1000, False PT100
 
 if platform.system() != "Windows":
     # On Linux/OSX, use the Qt timer
@@ -142,8 +144,8 @@ class AverageBuffer:
 
 class States:
     """Expose a named list of states to be used as a simple state machine."""
-    NotConnected, Idle_Init, Idle, Sequence_Idle, Measuring_Offset, Stationary_Graph, Measuring_CV, Measuring_CD, Measuring_Rate, Measuring_OCP = range(
-        10)
+    NotConnected, Idle_Init, Idle, Sequence_Idle, Measuring_Offset, Stationary_Graph, Measuring_CV, Measuring_CD, Measuring_Rate, Measuring_OCP, Measuring_Temp = range(
+        11)
 
 
 state = States.NotConnected  # Initial state
@@ -1050,8 +1052,7 @@ def cv_start():
         cv_duration_text = duration_to_text_days_hours(cv_duration)
         test_end = datetime.datetime.now() + datetime.timedelta(seconds=cv_duration)
         cv_end_text = test_end.strftime("%Y-%m-%d %H:%M:%S")
-        cv_time_calculator_text.setText(
-            f"Duration: {cv_duration_text}\nStart: {test_start}\nEst. End: {cv_end_text} ")
+        cv_time_calculator_text.setText(f"Duration: {cv_duration_text}\nStart: {test_start}\nEst. End: {cv_end_text} ")
         cv_outputfile = open(cv_parameters['filename'], 'w', 1)  # 1 means line-buffered
         # do not change spacing below - it will change the fileheader
         cv_outputfile.write(
@@ -2000,6 +2001,146 @@ def rate_stop(interrupted=True):
         GraphAutoExport(plot_frame, rate_parameters['filename'])
 
 
+def plotinterval_changed():
+    if plotinterval_combobox.currentText() == "Custom":
+        plotinterval_custom_entry.setEnabled(True)
+    else:
+        plotinterval_custom_entry.setEnabled(False)
+
+def temp_getparams():
+    global temp_parameters, temp_sensor_type
+    try:
+        days = int(temp_duration_days.text())
+        hours = int(temp_duration_hours.text())
+        minutes = int(temp_duration_minutes.text())
+        seconds = int(temp_duration_seconds.text())
+        temp_parameters['duration'] = days * 86400 + hours * 3600 + minutes * 60 + seconds
+        if temp_pt1000_radio_entry.isChecked():
+            temp_sensor_type = True
+            temp_parameters["sensor_type"] = True
+        elif temp_pt100_radio_entry.isChecked():
+            temp_sensor_type = False
+            temp_parameters["sensor_type"] = False
+        plotIntervalIndex = plotinterval_combobox.currentIndex()
+        plotIntervalList = [1, 5, 15, 30, 60, 300, 600, 900, 1800, 3600, "Custom"]
+        if plotIntervalList[plotIntervalIndex] == "Custom":
+            plotinterval = int(plotinterval_custom_entry.text())
+        else:
+            plotinterval = plotIntervalList[plotIntervalIndex]
+        temp_parameters['plotinterval'] = plotinterval
+        temp_parameters['filename'] = str(temp_file_entry.text())
+        # temp_parameters['target_temperature'] = float(target_temp_entry.text())
+        # temp_parameters['stable_duration'] = int(target_temp_stableduration_entry.text())
+        return True
+    except ValueError:
+        QtGui.QMessageBox.critical(mainwidget, "Not a number",
+                                   "One or more parameters could not be interpreted as a number.")
+        return False
+
+
+def temp_validate_parameters():
+    """Check if the chosen charge/discharge parameters make sense. If so, return True."""
+    if temp_parameters['duration'] <= 0:
+        QtGui.QMessageBox.critical(mainwidget, "Duration Error",
+                                   "Duration cannot be negative or zero.")
+        return False
+    if temp_parameters['plotinterval'] <= 0:
+        QtGui.QMessageBox.critical(mainwidget, "Plot Interval Error", "The plot interval cannot be negative or zero.")
+        return False
+    return True
+
+
+def start_temp_measurement():
+    global state, temp_plot_curves, temp_outputfile_raw, temp_sensor_type, temp_starttime, temp_time_data, temp_potential_data, temp_current_data, temp_temperature_data, temp_parameters
+    if check_state([States.Idle,
+                    States.Stationary_Graph]) and temp_getparams() and temp_validate_parameters() and validate_file(
+        temp_parameters['filename']):
+        temp_plot_curves = []
+        if temp_sensor_type:
+            sensor = "PT1000"
+        elif not temp_sensor_type:
+            sensor = "PT100"
+        test_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        test_end = datetime.datetime.now() + datetime.timedelta(
+            seconds=temp_parameters['duration'])
+        test_end_text = test_end.strftime("%Y-%m-%d %H:%M:%S")
+        temp_outputfile_raw = open(temp_parameters['filename'], 'w', 1)  # 1 means line-buffered
+        temp_outputfile_raw.write(
+            f"""Device Serial:\t{dev.serial_number}
+Start Time:\t{test_start}
+Estimated End Time:\t{test_end_text}
+Duration (s):\t{temp_parameters['duration']}
+Plot Interval (s):\t{temp_parameters['plotinterval']}
+Sensor Type:\t{sensor}
+
+Elapsed_Time\tPotential(V)\tCurrent(A)\tTemperature(Deg C)\n""")
+        set_output(1, 1)  # first part is mode 1 (mA), second part is current value of 1 mA
+        set_control_mode(True)  # Galvanostatic control
+        time.sleep(.2)  # Allow DAC some time to settle
+        temp_starttime = timeit.default_timer()
+        samplesToAverage = int(int(temp_parameters['plotinterval'])*11.11111111111111)
+        temp_time_data = AverageBuffer(samplesToAverage)  # Holds averaged data for elapsed time
+        temp_potential_data = AverageBuffer(samplesToAverage)  # Holds averaged data for potential
+        temp_current_data = AverageBuffer(samplesToAverage)  # Holds averaged data for current
+        temp_temperature_data = AverageBuffer(samplesToAverage)
+        set_cell_status(True)  # Cell on
+        preview_cancel_button.hide()
+        try:  # Set up the plotting area
+            legend.scene().removeItem(legend)
+        except AttributeError:
+            pass
+        plot_frame.clear()
+        plot_frame.enableAutoRange()
+        plot_frame.setLabel('bottom', 'Time', units="s")
+        plot_frame.setLabel('left', 'Temperature', units="\u2103")
+        temp_plot_curves.append(plot_frame.plot(pen=pen_color[0]))  # Draw potential as a function of charge in yellow
+        log_message("Temperature measurement started. Saving to: %s" % temp_parameters['filename'])
+        state = States.Measuring_Temp
+
+
+def update_temp_measurement():
+    global state, temp_outputfile_raw, temp_sensor_type, temp_starttime, temp_time_data, temp_potential_data, temp_current_data, temp_temperature_data, temp_parameters, temp_sensor_type
+    elapsed_time = timeit.default_timer() - temp_starttime
+    if elapsed_time >= temp_parameters['duration']:
+        stop_temp_measurement(interrupted=False)
+    else:
+        read_potential_current()
+        temp_time_data.add_sample(elapsed_time)
+        temp_potential_data.add_sample(potential)
+        temp_current_data.add_sample(current * 1e-3)  # Convert mA to A
+        if temp_sensor_type:
+            RTD_res = 1000
+            RperDeg = 3.85
+        elif not temp_sensor_type:
+            RTD_res = 100
+            RperDeg = 0.385
+        temp_temperature_data.add_sample(((potential/(current*1e-3))-RTD_res)/RperDeg)
+        if len(temp_time_data.samples) == 0 and len(temp_time_data.averagebuffer) > 0:  # A new average was just calculated
+            temp_outputfile_raw.write(
+                f"{temp_time_data.averagebuffer[-1]:e}\t"
+                f"{temp_potential_data.averagebuffer[-1]:e}\t"
+                f"{temp_current_data.averagebuffer[-1]:e}\t"
+                f"{temp_temperature_data.averagebuffer[-1]:e}\n"
+            )
+            temp_plot_curves[0].setData(temp_time_data.averagebuffer, temp_temperature_data.averagebuffer)
+            # temp_out = (temp_temperature_data.averagebuffer[-1]:.2f)
+            temperature_monitor.setText(f"{temp_temperature_data.averagebuffer[-1]:.2f} \u2103")
+
+
+def stop_temp_measurement(interrupted=True):
+    global state
+    if check_state([States.Measuring_Temp]):
+        set_cell_status(False)  # Cell off
+        temp_outputfile_raw.close()
+        if interrupted:
+            log_message("Temperature measurement interrupted.")
+        else:
+            log_message("Temperature measurement finished.")
+        state = States.Stationary_Graph
+        preview_cancel_button.show()
+        GraphAutoExport(plot_frame, temp_parameters['filename'])
+
+
 def ocp_getparams():
     global ocp_parameters
     try:
@@ -2212,6 +2353,7 @@ def sequence_start():
         seq_ocp_start()
     else:
         print("Error: Test type not recognized")
+
 #-----------------------------------------------------------------------------------------------------------------------
 
 
@@ -2302,9 +2444,10 @@ preview_cancel_hlayout.addWidget(preview_cancel_button)
 preview_cancel_button.hide()
 
 tab_frame = QtGui.QTabWidget()
-tab_frame.setFixedWidth(400)
+tab_frame.setFixedWidth(500)
 
-tab_names = ["Hardware", "CV", "Charge/disch.", "Rate testing", "OCP", "Sequence"]
+tab_names = ["Hardware", "CV", "Charge/disch.", "Rate testing", "OCP", "Sequence", "Temperature"]
+
 tabs = [add_my_tab(tab_frame, tab_name) for tab_name in tab_names]
 
 # Set up the GUI - Hardware tab --------------------------------------------------------------------------------------
@@ -2917,7 +3060,94 @@ sequence_info_layout.setContentsMargins(3, 10, 3, 3)
 sequence_vbox.addWidget(sequence_info_box)
 
 tabs[5].setLayout(sequence_vbox)
+# ----------------------------------------------------------
+temp_vbox = QtGui.QVBoxLayout()
+temp_vbox.setAlignment(QtCore.Qt.AlignTop)
 
+temp_params_box = QtGui.QGroupBox(title="Temperature Measurement Parameters", flat=False)
+format_box_for_parameter(temp_params_box)
+temp_params_layout = QtGui.QVBoxLayout()
+temp_params_box.setLayout(temp_params_layout)
+
+
+tempsensor_radio_layout = QtGui.QHBoxLayout()
+temp_type_label_entry = QtGui.QLabel("Temperature Sensor Type:")
+tempsensor_radio_layout.addWidget(temp_type_label_entry)
+temp_pt100_radio_entry = make_radio_entry(tempsensor_radio_layout, "PT100")
+temp_pt1000_radio_entry = make_radio_entry(tempsensor_radio_layout, "PT1000")
+temp_pt1000_radio_entry.setChecked(True)
+tempsensor_radio_layout.setSpacing(6)
+tempsensor_radio_layout.setContentsMargins(3, 10, 3, 3)
+temp_params_layout.addLayout(tempsensor_radio_layout)
+
+temp_duration_layout = QtGui.QHBoxLayout()
+temp_duration_label_entry = QtGui.QLabel("Duration:")
+temp_duration_layout.addWidget(temp_duration_label_entry)
+temp_duration_days = make_label_entry(temp_duration_layout, "Days:")
+temp_duration_days.setText("0")
+temp_duration_hours = make_label_entry(temp_duration_layout, "Hours:")
+temp_duration_hours.setText("0")
+temp_duration_minutes = make_label_entry(temp_duration_layout, "Minutes:")
+temp_duration_minutes.setText("0")
+temp_duration_seconds = make_label_entry(temp_duration_layout, "Seconds:")
+temp_duration_seconds.setText("0")
+temp_duration_layout.setSpacing(10)
+temp_duration_layout.setContentsMargins(3, 10, 3, 3)
+temp_params_layout.addLayout(temp_duration_layout)
+
+plotinterval_hbox = QtGui.QHBoxLayout()
+plotinterval_label_entry = QtGui.QLabel("Plot Interval:")
+plotinterval_hbox.addWidget(plotinterval_label_entry)
+plotinterval_combobox = QtGui.QComboBox()
+plotintervals = ["1 second", "5 seconds", "15 seconds", "30 seconds", "1 minute", "5 minutes", "10 minutes", "15 minutes", "Custom"]
+for item in plotintervals:
+    plotinterval_combobox.addItem(item)
+plotinterval_combobox.setCurrentIndex(2)
+plotinterval_combobox.currentIndexChanged.connect(lambda: plotinterval_changed())
+plotinterval_hbox.addWidget(plotinterval_combobox)
+plotinterval_hbox.setSpacing(6)
+plotinterval_hbox.setContentsMargins(3, 10, 3, 3)
+temp_params_layout.addLayout(plotinterval_hbox)
+plotinterval_custom_entry = make_label_entry(temp_params_layout, "Custom Interval (s):")
+plotinterval_custom_entry.setText("1")
+plotinterval_custom_entry.setEnabled(False)
+
+# target_temp_entry = make_label_entry(temp_params_layout, "Target Temperature (Degrees Celcius):")
+# target_temp_stableduration_entry = make_label_entry(temp_params_layout, "Target Temperature Stable Duration (s):")
+
+temp_file_box = QtGui.QGroupBox(title="Output data filename", flat=False)
+format_box_for_parameter(temp_file_box)
+temp_file_layout = QtGui.QVBoxLayout()
+temp_file_box.setLayout(temp_file_layout)
+temp_file_choose_layout = QtGui.QHBoxLayout()
+temp_file_entry = QtGui.QLineEdit()
+temp_file_choose_layout.addWidget(temp_file_entry)
+temp_file_choose_button = QtGui.QPushButton("...")
+temp_file_choose_button.setFixedWidth(32)
+temp_file_choose_button.clicked.connect(
+    lambda: choose_file(temp_file_entry, "Choose where to save the temperature measurement data"))
+temp_file_choose_layout.addWidget(temp_file_choose_button)
+temp_file_layout.addLayout(temp_file_choose_layout)
+temp_file_layout.setSpacing(6)
+temp_file_layout.setContentsMargins(3, 10, 3, 3)
+
+temp_start_button = QtGui.QPushButton("Start Temperature Measurement")
+temp_start_button.clicked.connect(lambda: start_temp_measurement())
+temp_stop_button = QtGui.QPushButton("Stop Temperature Measurement")
+temp_stop_button.clicked.connect(lambda: stop_temp_measurement(interrupted=True))
+
+temperature_monitor, temperature_monitor_box = make_groupbox_indicator("Current Temperature:", "+#.## \u2103")
+temperature_monitor.setFont(QtGui.QFont("monospace", 32))
+
+temp_vbox.addWidget(temperature_monitor_box)
+temp_vbox.addWidget(temp_params_box)
+temp_vbox.addWidget(temp_file_box)
+temp_vbox.addWidget(temp_start_button)
+temp_vbox.addWidget(temp_stop_button)
+temp_vbox.setSpacing(6)
+temp_vbox.setContentsMargins(3, 3, 3, 3)
+
+tabs[6].setLayout(temp_vbox)
 # ------------------------------------------------------------------------------------------
 # Sequence Pop-up Functions
 
@@ -3486,6 +3716,8 @@ def periodic_update():  # A state machine is used to determine which functions n
         rate_update()
     elif state == States.Measuring_OCP:
         ocp_update()
+    elif state == States.Measuring_Temp:
+        update_temp_measurement()
     elif state == States.Stationary_Graph:
         read_potential_current()
 
