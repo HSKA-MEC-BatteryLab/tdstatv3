@@ -32,6 +32,7 @@ import pyqtgraph.exporters
 import scipy.integrate
 import usb
 from PyQt5 import QtWidgets, QtCore, QtGui
+import json
 
 # variable initializations
 usb_debug_flag = False
@@ -148,8 +149,18 @@ class AverageBuffer:
 
 class States:
     """Expose a named list of states to be used as a simple state machine."""
-    NotConnected, Idle_Init, Idle, Sequence_Idle, Measuring_Offset, Stationary_Graph, Measuring_CV, Measuring_CD, Measuring_Rate, Measuring_OCP, Measuring_Temp = range(
-        11)
+    (
+        NotConnected,
+        Idle_Init,
+        Idle,
+        Sequence_Idle,
+        Measuring_Offset,
+        Stationary_Graph,
+        Measuring_CV, Measuring_CD,
+        Measuring_Rate,
+        Measuring_OCP,
+        Measuring_Temp
+    ) = range(11)
 
 
 state = States.NotConnected  # Initial state
@@ -428,7 +439,7 @@ def connect_disconnect_usb():
             if dev.serial_number != usb_device_list[serial_index]:
                 dev = None
                 # print('skipped')
-        except ValueError:  # TODO: refine this ValueError skip if possible
+        except ValueError:
             # this section allows the device scan to bypass lower-serial-number devices that are in use
             pass
             # dev = None
@@ -860,6 +871,21 @@ def remove_test(widget_list, index):
         #     i = i + 1
 
 
+def seq_list_changed():
+    global sequence_index, sequence_test_list, test_sequence
+    sequence_index = 0
+    temp_sequence = {}
+    for row in range(0, len(sequence_test_list)):
+        list_filename = sequence_test_list.item(row).text()
+        # print(list_filename)
+        for key in test_sequence:
+            if test_sequence[key]["filename"] == list_filename:
+                test_sequence[key]["test_key"] = row
+                temp_sequence[row] = test_sequence[key]
+    test_sequence = temp_sequence
+
+
+
 def confirm_test():
     global sequence_index, sequence_test_list, test_sequence
     sequence_index = 0
@@ -877,6 +903,9 @@ def confirm_test():
                 test_sequence[key]["test_key"] = row
                 temp_sequence[row] = test_sequence[key]
     test_sequence = temp_sequence
+    for key in test_sequence:
+        if not validate_file(test_sequence[key]["filename"]):
+            return
     # print(f"post-sort: {test_sequence}")
     sequence_start_button.setEnabled(True)
     sequence_test_add_button.setEnabled(False)
@@ -908,7 +937,7 @@ def toggle_error_logging(checkbox_state):
 def toggle_voltage_finish(checkbox_state):
     """Enable or disable constant voltage finishing during constant current tests"""
     global cd_voltage_finish_flag
-    print("toggle_voltage_finish")
+    # print("toggle_voltage_finish")
     if cd_voltage_finish_flag == True:
         cd_voltage_finish_flag = False
         voltage_finish_time_radio.setEnabled(False)
@@ -933,7 +962,7 @@ def set_voltage_finish_mode():
     global cd_voltage_finish_mode
     if voltage_finish_time_radio.isChecked():
         cd_voltage_finish_mode = 0
-        print("voltage finish mode", cd_voltage_finish_mode)
+        # print("voltage finish mode", cd_voltage_finish_mode)
         voltage_finish_time_entry.setText("")
         voltage_finish_chargecurrent_entry.setText("")
         voltage_finish_dischargecurrent_entry.setText("")
@@ -943,7 +972,7 @@ def set_voltage_finish_mode():
         voltage_finish_dischargecurrent_entry.setEnabled(False)
     if voltage_finish_current_radio.isChecked():
         cd_voltage_finish_mode = 1
-        print("voltage finish mode", cd_voltage_finish_mode)
+        # print("voltage finish mode", cd_voltage_finish_mode)
         voltage_finish_time_entry.setText("")
         voltage_finish_chargecurrent_entry.setText("")
         voltage_finish_dischargecurrent_entry.setText("")
@@ -954,7 +983,7 @@ def set_voltage_finish_mode():
         voltage_finish_dischargecurrent_entry.setEnabled(True)
     if voltage_finish_both_radio.isChecked():
         cd_voltage_finish_mode = 2
-        print("voltage finish mode", cd_voltage_finish_mode)
+        # print("voltage finish mode", cd_voltage_finish_mode)
         # voltage_finish_time_entry.setText("")
         # voltage_finish_current_entry.setText("")
         voltage_finish_time_entry.setEnabled(True)
@@ -1126,9 +1155,9 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tCycle\n"""
 
 
 def seq_cv_start():
-    """Initialize the CV measurement.""" # TODO: set seq_cv_ocv_flag state
+    """Initialize the CV measurement."""
     global cv_time_data, cv_potential_data, cv_current_data, cv_plot_curve, cv_outputfile, state, skipcounter, cv_parameters, test_start, test_end
-    print("seq_cv_start")
+    # print("seq_cv_start")
     if check_state(
             [States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and cv_validate_parameters() and validate_file(
         cv_parameters['filename'], overwrite_protect=False):
@@ -1259,7 +1288,6 @@ def cv_stop(interrupted=True):
         if sequence_flag == True:
             state = States.Sequence_Idle
         GraphAutoExport(plot_frame, cv_parameters['filename'])
-# TODO: figure out the error in displaying the integral from charge_arr
 
 def cv_preview():
     """Generate a preview of the CV potential profile in the plot window, based on the CV parameters currently entered in the GUI."""
@@ -1306,7 +1334,7 @@ def cv_get_ocp():
 
 def cd_getparams():
     """Retrieve the charge/discharge parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
-    global cd_parameters, cd_voltage_finish_flag
+    global cd_parameters, cd_voltage_finish_flag, cd_voltage_finish_mode
     try:
         cd_parameters['lbound'] = float(cd_lbound_entry.text())
         cd_parameters['ubound'] = float(cd_ubound_entry.text())
@@ -1315,19 +1343,24 @@ def cd_getparams():
         cd_parameters['numcycles'] = int(cd_numcycles_entry.text())
         cd_parameters['numsamples'] = int(cd_numsamples_entry.text())
         cd_parameters['filename'] = str(cd_file_entry.text())
-        if cd_voltage_finish_flag:
-            if cd_voltage_finish_mode == 0:
+        cd_parameters['finish_duration'] = 0
+        cd_parameters['chargecurrent_duration'] = 0
+        cd_parameters['dischargecurrent_duration'] = 0
+        cd_parameters['voltage_finish_flag'] = cd_voltage_finish_flag
+        cd_parameters['voltage_finish_mode'] = cd_voltage_finish_mode
+        if cd_parameters['voltage_finish_flag']: #if cd_voltage_finish_flag:
+            if cd_parameters['voltage_finish_mode'] == 0: #if cd_voltage_finish_mode == 0:
                 cd_parameters['finish_duration'] = int(voltage_finish_time_entry.text())
                 cd_parameters['chargecurrent_duration'] = 0
                 cd_parameters['dischargecurrent_duration'] = 0
                 # print("cd mode 0 - cd_getparams")
                 # print(cd_parameters['finish_duration'])
-            elif cd_voltage_finish_mode == 1:
+            elif cd_parameters['voltage_finish_mode'] == 1:  #elif cd_voltage_finish_mode == 1:
                 cd_parameters['finish_duration'] = 0
                 cd_parameters['chargecurrent_duration'] = float(voltage_finish_chargecurrent_entry.text()) / 1e3
                 cd_parameters['dischargecurrent_duration'] = float(voltage_finish_dischargecurrent_entry.text()) / 1e3
                 # print("cd mode 1 - cd_getparams")
-            elif cd_voltage_finish_mode == 2:
+            elif cd_parameters['voltage_finish_mode'] == 2:  #elif cd_voltage_finish_mode == 2:
                 cd_parameters['chargecurrent_duration'] = float(voltage_finish_chargecurrent_entry.text()) / 1e3
                 cd_parameters['dischargecurrent_duration'] = float(voltage_finish_dischargecurrent_entry.text()) / 1e3
                 cd_parameters['finish_duration'] = int(voltage_finish_time_entry.text())
@@ -1340,20 +1373,12 @@ def cd_getparams():
 
 
 def cd_validate_parameters():
+    # print(f"State: {state}")
+    # print(cd_parameters)
     """Check if the chosen charge/discharge parameters make sense. If so, return True."""
     if cd_parameters['ubound'] < cd_parameters['lbound']:
         QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
                                    "The upper bound cannot be lower than the lower bound.")
-        return False
-    if cd_parameters['chargecurrent'] == 0.:
-        QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error", "The charge current cannot be zero.")
-        return False
-    if cd_parameters['dischargecurrent'] == 0.:
-        QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error", "The discharge current cannot be zero.")
-        return False
-    if cd_parameters['chargecurrent'] * cd_parameters['dischargecurrent'] > 0:
-        QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                   "Charge and discharge current must have opposite sign.")
         return False
     if cd_parameters['numcycles'] <= 0:
         QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
@@ -1363,66 +1388,68 @@ def cd_validate_parameters():
         QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
                                    "The number of samples to average must be at least 1.")
         return False
-    if cd_voltage_finish_flag:
-        if cd_voltage_finish_mode == 0:
+    if cd_parameters['voltage_finish_flag']: #if cd_voltage_finish_flag:
+        # print(f"cd_validate_parameters VF Flag: {cd_parameters['voltage_finish_flag']}")
+        # print(f"cd_validate_parameters VF Mode: {cd_parameters['voltage_finish_mode']}")
+        if cd_parameters['voltage_finish_mode'] == 0: #if cd_voltage_finish_mode == 0:
             if cd_parameters['finish_duration'] <= 0:
                 QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                           "The time for the voltage finish must be positive and non-zero.")
+                                           "Mode 0: The time for the voltage finish must be positive and non-zero.")
                 return False
-        elif cd_voltage_finish_mode == 1:
+        elif cd_parameters['voltage_finish_mode'] == 1:  #elif cd_voltage_finish_mode == 1:
             if cd_parameters['chargecurrent'] > 0:
                 if cd_parameters['chargecurrent_duration'] <= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish charge must match the sign of the charge current.")
+                                               "Mode 1: The sign for the voltage finish charge must match the sign of the charge current.")
                     return False
             if cd_parameters['chargecurrent'] < 0:
                 if cd_parameters['chargecurrent_duration'] >= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish charge must match the sign of the charge current.")
+                                               "Mode 1: The sign for the voltage finish charge must match the sign of the charge current.")
                     return False
             if cd_parameters['dischargecurrent'] > 0:
                 if cd_parameters['dischargecurrent_duration'] <= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish discharge must match the sign of the discharge current.")
+                                               "Mode 1: The sign for the voltage finish discharge must match the sign of the discharge current.")
                     return False
             if cd_parameters['dischargecurrent'] < 0:
                 if cd_parameters['dischargecurrent_duration'] >= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish discharge must match the sign of the discharge current.")
+                                               "Mode 1: The sign for the voltage finish discharge must match the sign of the discharge current.")
                     return False
             if cd_parameters['chargecurrent_duration'] * cd_parameters['dischargecurrent_duration'] > 0:
                 QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                           "The charge and discharge duration must have opposite sign.")
+                                           "Mode 1: The charge and discharge duration must have opposite sign.")
                 return False
 
-        elif cd_voltage_finish_mode == 2:
+        elif cd_parameters['voltage_finish_mode'] == 2:  #elif cd_voltage_finish_mode == 2:
             if cd_parameters['chargecurrent'] > 0:
                 if cd_parameters['chargecurrent_duration'] <= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish charge must match the sign of the charge current.")
+                                               "Mode 2: The sign for the voltage finish charge must match the sign of the charge current.")
                     return False
             if cd_parameters['chargecurrent'] < 0:
                 if cd_parameters['chargecurrent_duration'] >= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish charge must match the sign of the charge current.")
+                                               "Mode 2: The sign for the voltage finish charge must match the sign of the charge current.")
                     return False
             if cd_parameters['dischargecurrent'] > 0:
                 if cd_parameters['dischargecurrent_duration'] <= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish discharge must match the sign of the discharge current.")
+                                               "Mode 2: The sign for the voltage finish discharge must match the sign of the discharge current.")
                     return False
             if cd_parameters['dischargecurrent'] < 0:
                 if cd_parameters['dischargecurrent_duration'] >= 0:
                     QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                               "The sign for the voltage finish discharge must match the sign of the discharge current.")
+                                               "Mode 2: The sign for the voltage finish discharge must match the sign of the discharge current.")
                     return False
             if cd_parameters['chargecurrent_duration'] * cd_parameters['dischargecurrent_duration'] > 0:
                 QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                           "The charge and discharge duration must have opposite sign.")
+                                           "Mode 2: The charge and discharge duration must have opposite sign.")
                 return False
             if cd_parameters['finish_duration'] <= 0:
                 QtWidgets.QMessageBox.critical(mainwidget, "Charge/discharge error",
-                                           "The time for the voltage finish must be positive and non-zero.")
+                                           "Mode 2: The time for the voltage finish must be positive and non-zero.")
                 return False
     return True
 
@@ -1485,7 +1512,7 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tHalf-Cycle\n"""
 def seq_cd_start():
     """Initialize the charge/discharge measurement."""
     global cd_charges, cd_currentsetpoint, cd_starttime, cd_currentcycle, cd_time_data, cd_potential_data, cd_current_data, cd_plot_curves, cd_outputfile_raw, cd_outputfile_capacities, state, cd_in_finishing
-    print("seq_cd_start")
+    # print("seq_cd_start")
     if check_state(
             [States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and cd_validate_parameters() and validate_file(
         cd_parameters['filename'], overwrite_protect=False):
@@ -1597,13 +1624,14 @@ def cd_update():
         if cd_in_finishing == True:
             # ======================================================
             '''Sets time based ending parameter'''
-            if cd_voltage_finish_time['semaphore'] == False:
+            if cd_voltage_finish_time['semaphore'] == False and (cd_voltage_finish_mode == 0 or cd_voltage_finish_mode == 2):
                 cd_voltage_finish_time['start_time'] = int(elapsed_time)
                 # print(elapsed_time)
                 cd_voltage_finish_time['end_time'] = elapsed_time + cd_parameters['finish_duration']
+                log_message("Voltage finish duration: " + str(cd_parameters['finish_duration']))
                 cd_voltage_finish_time['semaphore'] = True  # write-lock the flag
             # ======================================================
-            if cd_voltage_finish_current['semaphore'] == False:
+            if cd_voltage_finish_current['semaphore'] == False and (cd_voltage_finish_mode == 1 or cd_voltage_finish_mode == 2):
                 '''Sets current based ending parameter'''
                 # actual_current = numpy.abs(numpy.trapz(cd_current_data.averagebuffer, cd_time_data.averagebuffer) / 3600.)
                 # cd_voltage_finish_current['start_current'] = actual_current
@@ -1611,25 +1639,28 @@ def cd_update():
 
                 '''If in an odd numbered half-cycle, select end limit based on charge entry, if in an even numbered half-cycle, select end limit based on discharge entry'''
                 if cd_currentcycle % 2 == 1:
-                    print(f"setting end current to {cd_parameters['chargecurrent_duration']}")
+                    # print(f"setting end current to {cd_parameters['chargecurrent_duration']}")
+                    log_message("Voltage finish current: " + str(cd_parameters['chargecurrent_duration']))
                     cd_voltage_finish_current['end_current'] = cd_parameters['chargecurrent_duration']
                 elif cd_currentcycle % 2 == 0:
-                    print(f"setting end current to {cd_parameters['dischargecurrent_duration']}")
+                    # print(f"setting end current to {cd_parameters['dischargecurrent_duration']}")
+                    log_message("Voltage finish current: " + str(cd_parameters['dischargecurrent_duration']))
                     cd_voltage_finish_current['end_current'] = cd_parameters['dischargecurrent_duration']
                 cd_voltage_finish_current['semaphore'] = True  # write-lock the flag
             # ======================================================
             if control_mode == "GALVANOSTATIC":
                 set_control_mode(False)  # Switch to potentiostatic control
             # ======================================================
+            compensation_offset = 0.0003  # Offset needed to compensate for switching modes
             if cd_currentsetpoint > 0:
                 # maintained_voltage = cd_parameters['ubound'] + 0.0005  # Sets the Constant Voltage to the upper bound, offset needed to compensate for switching modes
                 # print("maintained voltage ubound")
-                maintained_voltage = cd_parameters['ubound'] +0.0003
+                maintained_voltage = cd_parameters['ubound'] + compensation_offset
             # ======================================================
             elif cd_currentsetpoint < 0:
                 # maintained_voltage = cd_parameters['lbound'] + 0.0005  # Sets the Constant Voltage to the lower bound, offset needed to compensate for switching modes
                 # print("maintained voltage lbound")
-                maintained_voltage = cd_parameters['lbound'] +0.0003
+                maintained_voltage = cd_parameters['lbound'] + compensation_offset
             else:
                 print("Error: maintained voltage 0")
                 maintained_voltage = 0
@@ -1688,9 +1719,9 @@ def cd_update():
                         or (current > cd_voltage_finish_current['end_current']
                             and maintained_voltage == cd_parameters['lbound']+0.0003):  # Time has elapsed
                     settling_counter -= 1
-                    print(f"Settling counter: {settling_counter}")
+                    # print(f"Settling counter: {settling_counter}")
                     if settling_counter == 0:
-                        print(f"mode 1, ending cycle. Current: {current}, end_current: {cd_voltage_finish_current['end_current']}, maintained_voltage: {maintained_voltage}")
+                        # print(f"mode 1, ending cycle. Current: {current}, end_current: {cd_voltage_finish_current['end_current']}, maintained_voltage: {maintained_voltage}")
                         cd_voltage_finish_current['semaphore'] = False  # Release the write-lock on the flag
                         cd_in_finishing = False
                         log_message("Cycle %s finished" % cd_currentcycle)
@@ -1720,20 +1751,22 @@ def cd_update():
                         settling_counter = 3
                 else:
                     set_output(0, maintained_voltage)
-                    print(f"mode 1, setting maintained voltage output, current: {current}, end_current: {cd_voltage_finish_current['end_current']}")
+                    # print(f"mode 1, setting maintained voltage output, current: {current}, end_current: {cd_voltage_finish_current['end_current']}")
 
             # ======================================================
             elif cd_voltage_finish_mode == 2:  # Voltage finish is both time and current mode
+                # if control_mode == "GALVANOSTATIC":
+                #     set_control_mode(False)  # Switch to potentiostatic control
                 # actual_current = numpy.abs(
                 #     numpy.trapz(cd_current_data.averagebuffer, cd_time_data.averagebuffer) / 3600.)
                 # if (cd_voltage_finish_current['end_current'] > actual_current) or (cd_voltage_finish_time['end_time'] > elapsed_time):  # Time has elapsed
                 #     """Output data to the DAC; units can be either V (index 0), mA (index 1), or raw counts (index 2)."""
                 #     set_output(0, maintained_voltage)
-                if (current > cd_voltage_finish_current['end_current'] and maintained_voltage == cd_parameters['ubound']) \
+                if (current > cd_voltage_finish_current['end_current'] and maintained_voltage == cd_parameters['ubound'] + compensation_offset) \
                         and (cd_voltage_finish_time['end_time'] > elapsed_time):
                     """Output data to the DAC; units can be either V (index 0), mA (index 1), or raw counts (index 2)."""
                     set_output(0, maintained_voltage)
-                elif (current < cd_voltage_finish_current['end_current'] and maintained_voltage == cd_parameters['lbound']) \
+                elif (current < cd_voltage_finish_current['end_current'] and maintained_voltage == cd_parameters['lbound'] + compensation_offset) \
                         and (cd_voltage_finish_time['end_time'] > elapsed_time):
                     """Output data to the DAC; units can be either V (index 0), mA (index 1), or raw counts (index 2)."""
                     set_output(0, maintained_voltage)
@@ -1891,7 +1924,7 @@ def rate_start():
 def seq_rate_start():
     """Initialize the rate testing measurement."""
     global state, crate_index, rate_halfcycle_countdown, rate_chg_charges, rate_dis_charges, rate_outputfile_raw, rate_outputfile_capacities, rate_starttime, rate_time_data, rate_potential_data, rate_current_data, rate_plot_scatter_chg, rate_plot_scatter_dis, legend
-    print("seq_rate_start")
+    # print("seq_rate_start")
     if check_state([States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and rate_validate_parameters() and validate_file(
         rate_parameters['filename'], overwrite_protect=False):
         crate_index = 0  # Index in the list of C-rates
@@ -1941,7 +1974,7 @@ def seq_rate_start():
 
 
 def rate_update():
-    print("rate_update")
+    # print("rate_update")
     """Add a new data point to the rate testing measurement (should be called regularly)."""
     global state, crate_index, rate_halfcycle_countdown
     elapsed_time = timeit.default_timer() - rate_starttime
@@ -2259,7 +2292,7 @@ def ocp_stop(interrupted=True):
 
 def seq_ocp_start():
     global state, ocp_outputfile, ocp_plot_curve, ocp_time_data, ocp_potential_data, potential_buffer
-    print("seq_ocp_start")
+    # print("seq_ocp_start")
     if check_state([States.Idle, States.Stationary_Graph, States.Sequence_Idle]) and sequence_flag and ocp_validate_parameters() and validate_file(ocp_parameters['filename'], overwrite_protect=False):
         ocp_starttime_text = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ocp_endtime = datetime.datetime.now() + datetime.timedelta(seconds=ocp_parameters['duration'])
@@ -2302,10 +2335,13 @@ def toggle_sequence_flag():
 
 
 def sequence_start():
-    global test_sequence, sequence_index, sequence_flag, cd_voltage_finish_flag, seq_cv_ocv_flag, state
+    global test_sequence, sequence_index, sequence_flag, cd_voltage_finish_flag, cd_voltage_finish_mode, seq_cv_ocv_flag, state
     sequence_confirm_button.setEnabled(False)
     sequence_flag = True
-    log_message("Sequence started")
+    # print("sequence_start function")
+    # print(f"sequence_index: {sequence_index}")
+    # if sequence_index == 0:
+    #     log_message("Sequence started")
     # print("test_sequence: ", test_sequence)
     if sequence_index >= len(test_sequence):
         sequence_flag = False
@@ -2313,13 +2349,15 @@ def sequence_start():
         state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
         preview_cancel_button.show()
         return
+    else:
+        log_message("Sequence " + str(sequence_index + 1) + " of " + str(len(test_sequence)) + " started")
     if test_sequence[sequence_index]['test_type'] == 'CV':
         cv_parameters['lbound'] = test_sequence[sequence_index]['lbound']
         cv_parameters['ubound'] = test_sequence[sequence_index]['ubound']
         if test_sequence[sequence_index]['auto_ocv'] == True:
             seq_cv_ocv_flag = True
             cv_parameters['startpot'] = cv_get_ocp()
-            print(f"OCV: {cv_parameters['startpot']}")
+            # print(f"OCV: {cv_parameters['startpot']}")
         elif test_sequence[sequence_index]['auto_ocv'] == False:
             seq_cv_ocv_flag = False
             cv_parameters['startpot'] = test_sequence[sequence_index]['startpot']
@@ -2328,7 +2366,7 @@ def sequence_start():
         cv_parameters['numcycles'] = test_sequence[sequence_index]['numcycles']
         cv_parameters['numsamples'] = test_sequence[sequence_index]['numsamples']
         cv_parameters['filename'] = test_sequence[sequence_index]['filename']
-        print(f"Starting CV: {cv_parameters['filename']}")
+        # print(f"Starting CV: {cv_parameters['filename']}")
         seq_cv_start()
     elif test_sequence[sequence_index]['test_type'] == 'CCD':
         cd_parameters['lbound'] = test_sequence[sequence_index]['lbound']
@@ -2337,19 +2375,41 @@ def sequence_start():
         cd_parameters['dischargecurrent'] = test_sequence[sequence_index]['dischargecurrent']
         cd_parameters['numcycles'] = test_sequence[sequence_index]['numcycles']
         cd_parameters['numsamples'] = test_sequence[sequence_index]['numsamples']
-        cd_parameters['filename'] = test_sequence[sequence_index]['filename']
+        # cd_parameters['filename'] = test_sequence[sequence_index]['filename']
+        cd_parameters['path'] = test_sequence[sequence_index]['path']
+        cd_parameters['name'] = test_sequence[sequence_index]['name']
+        cd_parameters['filename'] = cd_parameters['path'] + "/" + cd_parameters['name'] + ".csv"
         cd_voltage_finish_flag = test_sequence[sequence_index]['voltage_finish_flag']
-        if cd_voltage_finish_flag:
-            if test_sequence[sequence_index]['voltage_finish_mode'] == 0:
+        cd_voltage_finish_mode = test_sequence[sequence_index]['voltage_finish_mode']
+        cd_parameters['voltage_finish_flag'] = test_sequence[sequence_index]['voltage_finish_flag']
+        cd_parameters['voltage_finish_mode'] = test_sequence[sequence_index]['voltage_finish_mode']
+        if cd_parameters['voltage_finish_flag']: #cd_voltage_finish_flag:
+            # print("Voltage finish flag is true")
+            if cd_parameters['voltage_finish_mode'] == 0: #cd_voltage_finish_mode == 0: #test_sequence[sequence_index]['voltage_finish_mode'] == 0:
+                # print("Voltage finish mode is 0")
+                # cd_parameters['voltage_finish_flag'] = True
+                # cd_parameters['voltage_finish_mode'] = 0
                 cd_parameters['finish_duration'] = test_sequence[sequence_index]['finish_duration']
-                cd_parameters['current_duration'] = 0
-            elif test_sequence[sequence_index]['voltage_finish_mode'] == 1:
+                cd_parameters['chargecurrent_duration'] = 0
+                cd_parameters['dischargecurrent_duration'] = 0
+                # cd_parameters['current_duration'] = 0
+            elif cd_parameters['voltage_finish_mode'] == 1: #cd_voltage_finish_mode == 1: #test_sequence[sequence_index]['voltage_finish_mode'] == 1:
+                # print("Voltage finish mode is 1")
+                # cd_parameters['voltage_finish_flag'] = True
+                # cd_parameters['voltage_finish_mode'] = 1
                 cd_parameters['finish_duration'] = 0
-                cd_parameters['current_duration'] = test_sequence[sequence_index]['current_duration']
-            elif test_sequence[sequence_index]['voltage_finish_mode'] == 2:
+                # cd_parameters['current_duration'] = test_sequence[sequence_index]['current_duration']
+                cd_parameters['chargecurrent_duration'] = test_sequence[sequence_index]['chargecurrent_duration']
+                cd_parameters['dischargecurrent_duration'] = test_sequence[sequence_index]['dischargecurrent_duration']
+            elif cd_parameters['voltage_finish_mode'] == 2: #cd_voltage_finish_mode == 2: #test_sequence[sequence_index]['voltage_finish_mode'] == 2:
+                # print("Voltage finish mode is 2")
+                # cd_parameters['voltage_finish_flag'] = True
+                # cd_parameters['voltage_finish_mode'] = 2
                 cd_parameters['finish_duration'] = test_sequence[sequence_index]['finish_duration']
-                cd_parameters['current_duration'] = test_sequence[sequence_index]['current_duration']
-        print(f"Starting CCD: {cd_parameters['filename']}")
+                # cd_parameters['current_duration'] = test_sequence[sequence_index]['current_duration']
+                cd_parameters['chargecurrent_duration'] = test_sequence[sequence_index]['chargecurrent_duration']
+                cd_parameters['dischargecurrent_duration'] = test_sequence[sequence_index]['dischargecurrent_duration']
+        # print(f"Starting CCD: {cd_parameters['filename']}")
         seq_cd_start()
     elif test_sequence[sequence_index]['test_type'] == 'Rate':
         rate_parameters['lbound'] = test_sequence[sequence_index]['lbound']
@@ -2359,16 +2419,17 @@ def sequence_start():
         rate_parameters['currents'] = test_sequence[sequence_index]['currents']
         rate_parameters['numcycles'] = test_sequence[sequence_index]['numcycles']
         rate_parameters['filename'] = test_sequence[sequence_index]['filename']
-        print(f"Starting Rate: {rate_parameters['filename']}")
+        # print(f"Starting Rate: {rate_parameters['filename']}")
         seq_rate_start()
     elif test_sequence[sequence_index]['test_type'] == 'OCP':
         ocp_parameters['duration'] = test_sequence[sequence_index]['duration']
         ocp_parameters['numsamples'] = test_sequence[sequence_index]['numsamples']
         ocp_parameters['filename'] = test_sequence[sequence_index]['filename']
-        print(f"Starting OCP: {ocp_parameters['filename']}")
+        # print(f"Starting OCP: {ocp_parameters['filename']}")
         seq_ocp_start()
     else:
-        print("Error: Test type not recognized")
+        pass
+        # print("Error: Test type not recognized")
 
 #-----------------------------------------------------------------------------------------------------------------------
 
@@ -2397,6 +2458,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self.w.show()
         else:
             pass
+
+    def update_window(self, function):
+        if function == "CV":
+            self.w = SequenceCV()
+            self.w.seq_list_update()
+            self.w.show()
+        elif function == "CCD":
+            self.w = SequenceCD()
+            self.w.seq_list_update()
+            self.w.show()
+        elif function == "Rate":
+            self.w = SequenceRate()
+            self.w.seq_list_update()
+            self.w.show()
+        elif function == "OCP":
+            self.w = SequenceOCP()
+            self.w.seq_list_update()
+            self.w.show()
+
 
     def closeEvent(self, event):
         reply = PyQt5.QtWidgets.QMessageBox.question(self, 'Window Close', 'Are you sure you want to close the window?',
@@ -2525,7 +2605,7 @@ hardware_calibration_box_layout.addLayout(hardware_calibration_dac_hlayout)
 hardware_calibration_dac_vlayout = QtWidgets.QVBoxLayout()
 hardware_calibration_dac_hlayout.addLayout(hardware_calibration_dac_vlayout)
 hardware_calibration_dac_offset = make_label_entry(hardware_calibration_dac_vlayout, "DAC Offset")
-hardware_calibration_dac_offset.setToolTip("DAC Offset: ")  # TODO: update tooltips when confirmed
+hardware_calibration_dac_offset.setToolTip("DAC Offset: ")
 hardware_calibration_dac_gain = make_label_entry(hardware_calibration_dac_vlayout, "DAC Gain")
 hardware_calibration_dac_gain.setToolTip("DAC Gain: ")
 hardware_calibration_dac_calibrate_button = QtWidgets.QPushButton("Auto\nCalibrate")
@@ -2655,12 +2735,11 @@ error_log_filename = QtWidgets.QLineEdit()
 error_log_box_layout.addWidget(error_log_filename)
 error_log_choose_button = QtWidgets.QPushButton("...")
 error_log_choose_button.setToolTip("WARNING: ERROR LOG MAY BE SEVERAL GB IN SIZE, USE LINUX TO SPLIT")
-# TODO: set up log file splitting -> 200mb
 error_log_choose_button.setFixedWidth(32)
 error_log_choose_button.clicked.connect(
     lambda: choose_file(error_log_filename, "Choose where to save error logs"))
 error_log_box_layout.addWidget(error_log_choose_button)
-# TODO: handoff error log filename to logging functionality in main loop
+
 
 error_log_box_layout.setSpacing(5)
 error_log_box_layout.setContentsMargins(3, 9, 3, 3)
@@ -2991,23 +3070,41 @@ sequence_file_layout.setSpacing(6)
 sequence_file_layout.setContentsMargins(3, 10, 3, 3)
 sequence_vbox.addWidget(sequence_file_box)
 
-# Todo: implement sequence template loading and saving
-# sequence_template_box = QtWidgets.QGroupBox(title="Sequence template", flat=False)
-# format_box_for_parameter(sequence_template_box)
-# sequence_template_layout = QtWidgets.QHBoxLayout()
-# sequence_template_box.setLayout(sequence_template_layout)
-# sequence_template_load_button = QtWidgets.QPushButton("Load template sequence")
-# sequence_template_load_button.clicked.connect(lambda: seq_template_load)
-# sequence_template_layout.addWidget(sequence_template_load_button)
-# sequence_template_save_button = QtWidgets.QPushButton("Save template sequence")
-# sequence_template_save_button.clicked.connect(lambda: seq_template_save)
-# sequence_template_layout.addWidget(sequence_template_save_button)
+sequence_template_box = QtWidgets.QGroupBox(title="Sequence template", flat=False)
+format_box_for_parameter(sequence_template_box)
+sequence_template_layout = QtWidgets.QVBoxLayout()
+sequence_template_box.setLayout(sequence_template_layout)
 
-# sequence_template_layout.setSpacing(6)
-# sequence_template_layout.setContentsMargins(3, 10, 3, 3)
-# sequence_vbox.addWidget(sequence_template_box)
-# sequence_template_load_button.setEnabled(False)
-# sequence_template_save_button.setEnabled(False)
+sequence_template_file_choose_layout = QtWidgets.QHBoxLayout()
+sequence_template_file_entry = QtWidgets.QLineEdit()
+sequence_template_file_choose_layout.addWidget(sequence_template_file_entry)
+sequence_template_file_choose_button = QtWidgets.QPushButton("...")
+sequence_template_file_choose_button.setFixedWidth(32)
+sequence_template_file_choose_layout.addWidget(sequence_template_file_choose_button)
+sequence_template_file_choose_button.clicked.connect(
+    lambda: choose_file(sequence_template_file_entry, "Select a sequence template file or create a new one"))
+
+
+sequence_loadsave_layout = QtWidgets.QHBoxLayout()
+sequence_template_load_button = QtWidgets.QPushButton("Load template sequence")
+sequence_template_load_button.clicked.connect(lambda: seq_template_load())
+sequence_loadsave_layout.addWidget(sequence_template_load_button)
+sequence_template_save_button = QtWidgets.QPushButton("Save template sequence")
+sequence_template_save_button.clicked.connect(lambda: seq_template_save())
+sequence_loadsave_layout.addWidget(sequence_template_save_button)
+# sequence_loadsave_layout.setSpacing(6)
+# sequence_loadsave_layout.setContentsMargins(3, 10, 3, 3)
+
+sequence_template_layout.addLayout(sequence_template_file_choose_layout)
+sequence_template_layout.addLayout(sequence_loadsave_layout)
+sequence_template_layout.setSpacing(6)
+sequence_template_layout.setContentsMargins(3, 10, 3, 3)
+
+sequence_vbox.addWidget(sequence_template_box)
+sequence_template_file_entry.setEnabled(False)
+sequence_template_file_choose_button.setEnabled(False)
+sequence_template_load_button.setEnabled(False)
+sequence_template_save_button.setEnabled(False)
 
 sequence_params_box = QtWidgets.QGroupBox(title="Sequence Builder", flat=False)
 sequence_params_layout = QtWidgets.QVBoxLayout()
@@ -3042,6 +3139,8 @@ sequence_params_layout.addLayout(sequence_test_button_layout)
 sequence_test_list = QtWidgets.QListWidget()
 sequence_params_layout.addWidget(sequence_test_list)
 sequence_test_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+sequence_test_list.itemDoubleClicked.connect(lambda: seq_view_list())
+sequence_test_list.model().rowsMoved.connect(lambda: seq_list_changed())
 
 sequence_confirm_button = QtWidgets.QPushButton("Confirm Test Order")
 sequence_confirm_button.clicked.connect(lambda: confirm_test())
@@ -3055,11 +3154,11 @@ sequence_start_button.clicked.connect(lambda: sequence_start())
 sequence_vbox.addWidget(sequence_start_button)
 
 sequence_test_stop_button = QtWidgets.QPushButton("Skip Current Test")
-sequence_test_stop_button.clicked.connect(lambda: seq_skip_test())  # Todo: fix this
+sequence_test_stop_button.clicked.connect(lambda: seq_skip_test())
 sequence_vbox.addWidget(sequence_test_stop_button)
 
 sequence_stop_button = QtWidgets.QPushButton("Stop Test Sequence")
-sequence_stop_button.clicked.connect(lambda: seq_stop_all())  # Todo: fix this
+sequence_stop_button.clicked.connect(lambda: seq_stop_all())
 sequence_vbox.addWidget(sequence_stop_button)
 
 sequence_vbox.setSpacing(6)
@@ -3177,9 +3276,10 @@ def check_button():
         sequence_cdradio_entry.setEnabled(True)
         sequence_rateradio_entry.setEnabled(True)
         sequence_ocvradio_entry.setEnabled(True)
-        # Todo: implement sequence template loading and saving
-        # sequence_template_load_button.setEnabled(True)
-        # sequence_template_save_button.setEnabled(True)
+        sequence_template_file_entry.setEnabled(True)
+        sequence_template_file_choose_button.setEnabled(True)
+        sequence_template_load_button.setEnabled(True)
+        sequence_template_save_button.setEnabled(True)
 
 
 def call_list_popup():
@@ -3211,7 +3311,10 @@ def seq_cv_getparams(self):
         cv_parameters['scanrate'] = float(self.sequence_cv_scanrate_entry.text()) / 1e3  # Convert to V/s
         cv_parameters['numcycles'] = int(self.sequence_cv_numcycles_entry.text())
         cv_parameters['numsamples'] = int(self.sequence_cv_numsamples_entry.text())
-        cv_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_cv_file_entry.text()) + ".csv"
+        cv_parameters['path'] = str(sequence_file_entry.text())
+        cv_parameters['name'] = str(self.sequence_cv_file_entry.text())
+        cv_parameters['filename'] = cv_parameters['path'] + "/" + cv_parameters['name'] + ".csv"
+        # cv_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_cv_file_entry.text()) + ".csv"
         # initialtime = cv_parameters['ubound'] - cv_parameters['startpot']
         # cycletime = (cv_parameters['ubound'] - cv_parameters['lbound']) * 2. * cv_parameters['numcycles']
         # finaltime = abs(cv_parameters['stoppot'] - cv_parameters['ubound'])
@@ -3227,10 +3330,9 @@ def seq_cv_getparams(self):
 
 def seq_cv_listing(self, listname):
     global cv_parameters, seq_cv_ocv_flag
-    seq_cv_getparams(self)
-    if seq_cv_getparams(self) and cv_validate_parameters() and validate_file(cv_parameters['filename'], overwrite_protect=True):
-        listname.addItem(cv_parameters['filename']) # TODO: adapt this -> filename is usually the full directory NOT WANTED!
-        # todo: show parameters in list or give option to review test settings easily
+    # seq_cv_getparams(self)
+    if seq_cv_getparams(self) and cv_validate_parameters():# and validate_file(cv_parameters['filename'], overwrite_protect=True):
+        listname.addItem(cv_parameters['filename'])
         items = listname.findItems(cv_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
             for item in items:
@@ -3246,7 +3348,8 @@ def seq_cv_listing(self, listname):
 
 def seq_cd_getparams(self):
     """Retrieve the charge/discharge parameters from the GUI input fields and store them in a global dictionary. If succesful, return True."""
-    global cd_parameters, cd_voltage_finish_flag
+    global cd_parameters, cd_voltage_finish_flag, cd_voltage_finish_mode
+    # print("seq_cd_getparams")
     try:
         cd_parameters['lbound'] = float(self.sequence_cd_lbound_entry.text())
         cd_parameters['ubound'] = float(self.sequence_cd_ubound_entry.text())
@@ -3254,7 +3357,10 @@ def seq_cd_getparams(self):
         cd_parameters['dischargecurrent'] = float(self.sequence_cd_dischargecurrent_entry.text()) / 1e3  # convert uA to mA
         cd_parameters['numcycles'] = int(self.sequence_cd_numcycles_entry.text())
         cd_parameters['numsamples'] = int(self.sequence_cd_numsamples_entry.text())
-        cd_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_cd_file_entry.text()) + ".csv"
+        cd_parameters['path'] = str(sequence_file_entry.text())
+        cd_parameters['name'] = str(self.sequence_cd_file_entry.text())
+        cd_parameters['filename'] = cd_parameters['path'] + "/" + cd_parameters['name'] + ".csv"
+        # cd_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_cd_file_entry.text()) + ".csv"
         if cd_voltage_finish_flag:
             cd_parameters['voltage_finish_flag'] = True
             if cd_voltage_finish_mode == 0:
@@ -3267,18 +3373,19 @@ def seq_cd_getparams(self):
             elif cd_voltage_finish_mode == 1:
                 cd_parameters['voltage_finish_mode'] = 1
                 cd_parameters['finish_duration'] = 0
-                cd_parameters['chargecurrent_duration'] = int(self.sequence_voltage_finish_chargecurrent_entry.text())
-                cd_parameters['dischargecurrent_duration'] = int(self.sequence_voltage_finish_dischargecurrent_entry.text())
+                cd_parameters['chargecurrent_duration'] = int(self.sequence_voltage_finish_chargecurrent_entry.text()) / 1e3
+                cd_parameters['dischargecurrent_duration'] = int(self.sequence_voltage_finish_dischargecurrent_entry.text()) / 1e3
                 # print("cd mode 1 - cd_getparams")
             elif cd_voltage_finish_mode == 2:
                 cd_parameters['voltage_finish_mode'] = 2
-                cd_parameters['chargecurrent_duration'] = int(self.sequence_voltage_finish_chargecurrent_entry.text())
-                cd_parameters['dischargecurrent_duration'] = int(self.sequence_voltage_finish_dischargecurrent_entry.text())
+                cd_parameters['chargecurrent_duration'] = int(self.sequence_voltage_finish_chargecurrent_entry.text()) / 1e3
+                cd_parameters['dischargecurrent_duration'] = int(self.sequence_voltage_finish_dischargecurrent_entry.text()) / 1e3
                 cd_parameters['finish_duration'] = int(self.sequence_voltage_finish_time_entry.text())
                 # print("cd mode 2 - cd_getparams")
         else:
             cd_parameters['voltage_finish_flag'] = False
         cd_voltage_finish_flag = False
+        cd_voltage_finish_mode = 0
         return True
     except ValueError:
         QtWidgets.QMessageBox.critical(mainwidget, "Not a number",
@@ -3288,8 +3395,8 @@ def seq_cd_getparams(self):
 
 def seq_cd_listing(self, listname):
     global cd_parameters
-    seq_cd_getparams(self)
-    if seq_cd_getparams(self) and cd_validate_parameters() and validate_file(cd_parameters['filename'], overwrite_protect=True):
+    # seq_cd_getparams(self)
+    if seq_cd_getparams(self) and cd_validate_parameters():# and validate_file(cd_parameters['filename'], overwrite_protect=True):
         listname.addItem(cd_parameters['filename'])
         items = listname.findItems(cd_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
@@ -3314,7 +3421,10 @@ def seq_rate_getparams(self):
         rate_parameters['currents'] = [rate_parameters['one_c_current'] * rc for rc in rate_parameters['crates']]
         rate_parameters['numcycles'] = int(self.sequence_rate_numcycles_entry.text())
         # rate_parameters['numsamples'] = int(self.sequence_rate_numsamples_entry.text())
-        rate_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_rate_file_entry.text()) + ".csv"
+        rate_parameters['path'] = str(sequence_file_entry.text())
+        rate_parameters['name'] = str(self.sequence_rate_file_entry.text())
+        rate_parameters['filename'] = rate_parameters['path'] + "/" + rate_parameters['name'] + ".csv"
+        # rate_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_rate_file_entry.text()) + ".csv"
         return True
     except ValueError:
         QtWidgets.QMessageBox.critical(mainwidget, "Not a number",
@@ -3324,8 +3434,8 @@ def seq_rate_getparams(self):
 
 def seq_rate_listing(self, listname):
     global rate_parameters
-    seq_rate_getparams(self)
-    if seq_rate_getparams(self) and rate_validate_parameters() and validate_file(rate_parameters['filename'], overwrite_protect=True):
+    # seq_rate_getparams(self)
+    if seq_rate_getparams(self) and rate_validate_parameters():# and validate_file(rate_parameters['filename'], overwrite_protect=True):
         listname.addItem(rate_parameters['filename'])
         items = listname.findItems(rate_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
@@ -3341,8 +3451,8 @@ def seq_rate_listing(self, listname):
 
 def seq_ocp_listing(self, listname):
     global ocp_parameters
-    seq_ocp_getparams(self)
-    if seq_ocp_getparams(self) and ocp_validate_parameters() and validate_file(ocp_parameters['filename'], overwrite_protect=True):
+    # seq_ocp_getparams(self)
+    if seq_ocp_getparams(self) and ocp_validate_parameters():# and validate_file(ocp_parameters['filename'], overwrite_protect=True):
         listname.addItem(ocp_parameters['filename'])
         items = listname.findItems(ocp_parameters['filename'], QtCore.Qt.MatchExactly)
         if len(items) > 0:
@@ -3362,7 +3472,10 @@ def seq_ocp_getparams(self):
     try:
         ocp_parameters['duration'] = int(self.sequence_ocp_duration_entry.text())
         ocp_parameters['numsamples'] = int(self.sequence_ocp_numsamples_entry.text())
-        ocp_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_ocp_file_entry.text()) + ".csv"
+        ocp_parameters['path'] = str(sequence_file_entry.text())
+        ocp_parameters['name'] = str(self.sequence_ocp_file_entry.text())
+        ocp_parameters['filename'] = ocp_parameters['path'] + "/" + ocp_parameters['name'] + ".csv"
+        # ocp_parameters['filename'] = str(sequence_file_entry.text()) + "/" + str(self.sequence_ocp_file_entry.text()) + ".csv"
         return True
     except ValueError:
         QtWidgets.QMessageBox.critical(mainwidget, "Not a number",
@@ -3382,6 +3495,13 @@ def seq_skip_test():
     elif state == States.Measuring_OCP:
         ocp_stop(interrupted=True)
 
+def seq_view_list():
+    global test_sequence
+    # print(test_sequence)
+    selected_test = test_sequence[sequence_test_list.currentRow()]
+    # print(selected_test)
+    MainWindow.update_window(win, selected_test['test_type'])
+
 def seq_stop_all():
     global state, sequence_flag
     sequence_flag = False
@@ -3395,13 +3515,37 @@ def seq_stop_all():
     elif state == States.Measuring_OCP:
         ocp_stop(interrupted=True)
 
+# def keystoint(x):
+#     return {lambda d: int(k) if k.lstrip('-').isdigit() else k: v for k, v in d.items()}
+#     # return {int(k): v for k, v in x.items()}
 
 def seq_template_load():
-    pass
+    global sequence_index, sequence_test_list, test_sequence
+    sequence_index = 0
+    sequence_test_list.clear()
+    test_sequence = {}
+    filename = sequence_template_file_entry.text()
+    # with open('D:/Downloads/pot_test/result.json') as json_file:
+    #     test_sequence = json.load(json_file)
+    with open(filename) as json_file:
+        test_sequence = json.load(json_file, object_hook=lambda d: {int(k)
+                         if k.lstrip('-').isdigit() else k: v for k, v in d.items()})
+    path = sequence_file_entry.text()
+    for test in test_sequence:
+        # print(test)
+        test_sequence[test]['path'] = path
+        test_sequence[test]['filename'] = path + "/" + test_sequence[test]['name'] + ".csv"
+        # print(test_sequence[test]['filename'])
+        sequence_test_list.addItem(test_sequence[test]['filename'])
 
 
 def seq_template_save():
-    pass
+    global test_sequence
+    filename = sequence_template_file_entry.text()
+    # with open('D:/Downloads/pot_test/result.json', 'w') as fp:
+    #     json.dump(test_sequence, fp, indent=4, sort_keys=True)
+    with open(filename, 'w') as fp:
+        json.dump(test_sequence, fp, indent=4, sort_keys=True)
 
 
 # ------------------------------------------------------------------------------------------
@@ -3433,14 +3577,14 @@ class SequenceCV(QtWidgets.QWidget):
         # sequence_cv_get_button.setFixedWidth(32)
         # sequence_cv_get_button.clicked.connect(cv_get_ocp)
 
-        sequence_cv_ocv_checkbox = QtWidgets.QCheckBox("Start CV at OCV")
-        sequence_cv_ocv_checkbox.stateChanged.connect(self.seq_toggle_automatic_ocv)
+        self.sequence_cv_ocv_checkbox = QtWidgets.QCheckBox("Start CV at OCV")
+        self.sequence_cv_ocv_checkbox.stateChanged.connect(self.seq_toggle_automatic_ocv)
         # sequence_voltage_finish_vbox_layout.addWidget(sequence_cv_ocv_checkbox)
 
         sequence_cv_hbox.addWidget(sequence_cv_label)
         sequence_cv_hbox.addWidget(self.sequence_cv_startpot_entry)
         # sequence_cv_hbox.addWidget(sequence_cv_get_button)
-        sequence_cv_hbox.addWidget(sequence_cv_ocv_checkbox)
+        sequence_cv_hbox.addWidget(self.sequence_cv_ocv_checkbox)
         sequence_cv_params_layout.addLayout(sequence_cv_hbox)
 
         self.sequence_cv_stoppot_entry = make_label_entry(sequence_cv_params_layout, "Stop potential (V)")
@@ -3456,32 +3600,65 @@ class SequenceCV(QtWidgets.QWidget):
         cv_msg_box.addWidget(sequence_cv_params_box)
 
         sequence_cv_button_layout = QtWidgets.QHBoxLayout()
-        sequence_cv_accept_button = QtWidgets.QPushButton("Add")
-        sequence_cv_accept_button.clicked.connect(
+        self.sequence_cv_accept_button = QtWidgets.QPushButton("Add")
+        self.sequence_cv_accept_button.clicked.connect(
             lambda: seq_cv_listing(win.w, sequence_test_list))
-        sequence_cv_cancel_button = QtWidgets.QPushButton("Cancel")
-        sequence_cv_cancel_button.clicked.connect(lambda: self.close())
-        sequence_cv_button_layout.addWidget(sequence_cv_accept_button)
-        sequence_cv_button_layout.addWidget(sequence_cv_cancel_button)
+        self.sequence_cv_cancel_button = QtWidgets.QPushButton("Cancel")
+        self.sequence_cv_cancel_button.clicked.connect(lambda: self.close())
+        sequence_cv_button_layout.addWidget(self.sequence_cv_accept_button)
+        sequence_cv_button_layout.addWidget(self.sequence_cv_cancel_button)
         cv_msg_box.addLayout(sequence_cv_button_layout)
 
         cv_msg_box.setSpacing(6)
         cv_msg_box.setContentsMargins(3, 3, 3, 3)
         self.setLayout(cv_msg_box)
 
-    def seq_toggle_automatic_ocv(cvwindow, checkbox_state):
+    def seq_toggle_automatic_ocv(self, checkbox_state):
         """Enable or disable constant voltage finishing during constant current tests"""
         global seq_cv_ocv_flag
         if seq_cv_ocv_flag == True:
             seq_cv_ocv_flag = False
-            cvwindow.sequence_cv_startpot_entry.setEnabled(True)
+            self.sequence_cv_startpot_entry.setEnabled(True)
             # print("CV OCV disabled")
             return
         if seq_cv_ocv_flag == False:
             seq_cv_ocv_flag = True
-            cvwindow.sequence_cv_startpot_entry.setEnabled(False)
+            self.sequence_cv_startpot_entry.setEnabled(False)
             # print("CV OCV enabled")
             return
+
+    def seq_list_update(self):
+        global test_sequence, sequence_flag
+        # print("seq_list_update")
+        self.sequence_cv_file_entry.setText(test_sequence[sequence_test_list.currentRow()]['name'])
+        self.sequence_cv_lbound_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['lbound']))
+        self.sequence_cv_ubound_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['ubound']))
+        self.sequence_cv_startpot_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['startpot']))
+        self.sequence_cv_stoppot_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['stoppot']))
+        self.sequence_cv_scanrate_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['scanrate']))
+        self.sequence_cv_numcycles_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numcycles']))
+        self.sequence_cv_numsamples_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numsamples']))
+        if test_sequence[sequence_test_list.currentRow()]['auto_ocv'] == True:
+            self.sequence_cv_startpot_entry.setEnabled(False)
+            self.sequence_cv_ocv_checkbox.setChecked(True)
+        self.sequence_cv_accept_button.setText("Update")
+        self.sequence_cv_accept_button.clicked.disconnect()
+        self.sequence_cv_accept_button.clicked.connect(lambda: self.seq_cv_updateparams())
+        if sequence_flag:
+            self.sequence_cv_accept_button.setEnabled(False)
+
+
+    def seq_cv_updateparams(self):
+        global test_sequence, cv_parameters, seq_cv_ocv_flag
+        if seq_cv_getparams(self) and cv_validate_parameters():
+            # print("seq_cv_updateparams")
+            # print(test_sequence[sequence_test_list.currentRow()])
+            test_sequence[sequence_test_list.currentRow()].update(cv_parameters)
+            # print(test_sequence[sequence_test_list.currentRow()])
+            # print(test_sequence)
+            sequence_test_list.item(sequence_test_list.currentRow()).setText(
+                test_sequence[sequence_test_list.currentRow()]["filename"])
+            self.close()
 
 # ------------------------------------------------------------------------------------------
 # CCD Parameter Pop-up
@@ -3528,9 +3705,9 @@ class SequenceCD(QtWidgets.QWidget):
         self.sequence_voltage_finish_current_radio.clicked.connect(lambda: self.seq_set_voltage_finish_mode())
         self.sequence_voltage_finish_both_radio.clicked.connect(lambda: self.seq_set_voltage_finish_mode())
 
-        sequence_voltage_finish_checkbox = QtWidgets.QCheckBox("Enable voltage finish")
-        sequence_voltage_finish_checkbox.stateChanged.connect(self.seq_toggle_voltage_finish)
-        sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_checkbox)
+        self.sequence_voltage_finish_checkbox = QtWidgets.QCheckBox("Enable voltage finish")
+        self.sequence_voltage_finish_checkbox.stateChanged.connect(self.seq_toggle_voltage_finish)
+        sequence_voltage_finish_vbox_layout.addWidget(self.sequence_voltage_finish_checkbox)
 
         sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_box)
         self.sequence_voltage_finish_time_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Time (s)")
@@ -3544,86 +3721,140 @@ class SequenceCD(QtWidgets.QWidget):
         self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
         sequence_cd_params_layout.addWidget(sequence_voltage_finish_vbox)
 
-
-
-        # sequence_voltage_finish_vbox_layout.addWidget(sequence_voltage_finish_box)
-        # self.sequence_voltage_finish_time_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Time (s)")
-        # self.sequence_voltage_finish_time_entry.setEnabled(False)
-        # self.sequence_voltage_finish_current_entry = make_label_entry(sequence_voltage_finish_vbox_layout, "Current (µA)")
-        # self.sequence_voltage_finish_current_entry.setEnabled(False)
-        # sequence_cd_params_layout.addWidget(sequence_voltage_finish_vbox)
-
         sequence_cd_params_layout.setSpacing(6)
         sequence_cd_params_layout.setContentsMargins(3, 10, 3, 3)
         cd_msg_box.addWidget(sequence_cd_params_box)
 
         sequence_cd_button_layout = QtWidgets.QHBoxLayout()
-        sequence_cd_accept_button = QtWidgets.QPushButton("Add")
-        sequence_cd_accept_button.clicked.connect(
+        self.sequence_cd_accept_button = QtWidgets.QPushButton("Add")
+        self.sequence_cd_accept_button.clicked.connect(
             lambda: seq_cd_listing(win.w, sequence_test_list))
-        sequence_cd_cancel_button = QtWidgets.QPushButton("Cancel")
-        sequence_cd_cancel_button.clicked.connect(lambda: self.close())
-        sequence_cd_button_layout.addWidget(sequence_cd_accept_button)
-        sequence_cd_button_layout.addWidget(sequence_cd_cancel_button)
+        self.sequence_cd_cancel_button = QtWidgets.QPushButton("Cancel")
+        self.sequence_cd_cancel_button.clicked.connect(lambda: self.close())
+        sequence_cd_button_layout.addWidget(self.sequence_cd_accept_button)
+        sequence_cd_button_layout.addWidget(self.sequence_cd_cancel_button)
         cd_msg_box.addLayout(sequence_cd_button_layout)
 
         cd_msg_box.setSpacing(6)
         cd_msg_box.setContentsMargins(3, 3, 3, 3)
         self.setLayout(cd_msg_box)
 
-    def seq_toggle_voltage_finish(cdwindow, checkbox_state):
+    def seq_list_update(self):
+        global test_sequence, sequence_flag
+        # print("seq_list_update")
+        self.sequence_cd_file_entry.setText(test_sequence[sequence_test_list.currentRow()]['name'])
+        self.sequence_cd_lbound_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['lbound']))
+        self.sequence_cd_ubound_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['ubound']))
+        self.sequence_cd_chargecurrent_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['chargecurrent']*1e3))
+        self.sequence_cd_chargecurrent_entry.setToolTip(
+            "Positive -> 1st Cycle Charge / Negative -> 1st Cycle Discharge")
+        self.sequence_cd_dischargecurrent_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['dischargecurrent']*1e3))
+        self.sequence_cd_dischargecurrent_entry.setToolTip("Flip sign of the Charge Current")
+        self.sequence_cd_numcycles_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numcycles']))
+        self.sequence_cd_numsamples_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numsamples']))
+
+        if test_sequence[sequence_test_list.currentRow()]['voltage_finish_flag']:
+            self.sequence_voltage_finish_checkbox.setChecked(True)
+            self.sequence_voltage_finish_chargecurrent_entry.setEnabled(False)
+            self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
+            if test_sequence[sequence_test_list.currentRow()]['voltage_finish_mode'] == 0:
+                self.sequence_voltage_finish_time_radio
+                self.sequence_voltage_finish_time_radio.setChecked(True)
+                self.sequence_voltage_finish_current_radio.setChecked(False)
+                self.sequence_voltage_finish_both_radio.setChecked(False)
+                self.sequence_voltage_finish_time_entry.setEnabled(True)
+                self.sequence_voltage_finish_time_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['finish_duration']))
+            elif test_sequence[sequence_test_list.currentRow()]['voltage_finish_mode'] == 1:
+                self.sequence_voltage_finish_time_radio.setChecked(False)
+                self.sequence_voltage_finish_current_radio.setChecked(True)
+                self.sequence_voltage_finish_both_radio.setChecked(False)
+                self.sequence_voltage_finish_time_entry.setEnabled(False)
+                self.sequence_voltage_finish_chargecurrent_entry.setEnabled(True)
+                self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(True)
+                self.sequence_voltage_finish_chargecurrent_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['chargecurrent_duration']*1e3))
+                self.sequence_voltage_finish_dischargecurrent_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['dischargecurrent_duration']*1e3))
+            elif test_sequence[sequence_test_list.currentRow()]['voltage_finish_mode'] == 2:
+                self.sequence_voltage_finish_time_radio.setChecked(False)
+                self.sequence_voltage_finish_current_radio.setChecked(False)
+                self.sequence_voltage_finish_both_radio.setChecked(True)
+                self.sequence_voltage_finish_time_entry.setEnabled(True)
+                self.sequence_voltage_finish_chargecurrent_entry.setEnabled(True)
+                self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(True)
+                self.sequence_voltage_finish_time_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['finish_duration']))
+                self.sequence_voltage_finish_chargecurrent_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['chargecurrent_duration']))
+                self.sequence_voltage_finish_dischargecurrent_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['dischargecurrent_duration']))
+        self.sequence_cd_accept_button.setText("Update")
+        self.sequence_cd_accept_button.clicked.disconnect()
+        self.sequence_cd_accept_button.clicked.connect(
+            lambda: self.seq_cd_updateparams())
+        if sequence_flag:
+            self.sequence_cd_accept_button.setEnabled(False)
+
+    def seq_cd_updateparams(self):
+        global test_sequence, cd_voltage_finish_flag, cd_voltage_finish_mode, cd_parameters
+        if seq_cd_getparams(self) and cd_validate_parameters():
+            # print("seq_cd_updateparams")
+            # print(test_sequence[sequence_test_list.currentRow()])
+            test_sequence[sequence_test_list.currentRow()].update(cd_parameters)
+            # print(test_sequence[sequence_test_list.currentRow()])
+            # print(test_sequence)
+            sequence_test_list.item(sequence_test_list.currentRow()).setText(
+                test_sequence[sequence_test_list.currentRow()]["filename"])
+            self.close()
+
+    def seq_toggle_voltage_finish(self, checkbox_state):
         """Enable or disable constant voltage finishing during constant current tests"""
         global cd_voltage_finish_flag
         if cd_voltage_finish_flag == True:
             cd_voltage_finish_flag = False
-            cdwindow.sequence_voltage_finish_time_radio.setEnabled(False)
-            cdwindow.sequence_voltage_finish_current_radio.setEnabled(False)
-            cdwindow.sequence_voltage_finish_time_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setText("")
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setText("")
-            cdwindow.sequence_voltage_finish_time_entry.setText("")
-            cdwindow.sequence_voltage_finish_both_radio.setEnabled(False)
+            self.sequence_voltage_finish_time_radio.setEnabled(False)
+            self.sequence_voltage_finish_current_radio.setEnabled(False)
+            self.sequence_voltage_finish_time_entry.setEnabled(False)
+            self.sequence_voltage_finish_chargecurrent_entry.setEnabled(False)
+            self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
+            self.sequence_voltage_finish_chargecurrent_entry.setText("")
+            self.sequence_voltage_finish_dischargecurrent_entry.setText("")
+            self.sequence_voltage_finish_time_entry.setText("")
+            self.sequence_voltage_finish_both_radio.setEnabled(False)
         if checkbox_state == 2:
             cd_voltage_finish_flag = True
-            cdwindow.sequence_voltage_finish_time_radio.setEnabled(True)
-            cdwindow.sequence_voltage_finish_current_radio.setEnabled(True)
-            cdwindow.sequence_voltage_finish_time_entry.setEnabled(True)
-            cdwindow.sequence_voltage_finish_time_entry.setText("")
-            cdwindow.sequence_voltage_finish_both_radio.setEnabled(True)
+            self.sequence_voltage_finish_time_radio.setEnabled(True)
+            self.sequence_voltage_finish_current_radio.setEnabled(True)
+            self.sequence_voltage_finish_time_entry.setEnabled(True)
+            self.sequence_voltage_finish_time_entry.setText("")
+            self.sequence_voltage_finish_both_radio.setEnabled(True)
 
-    def seq_set_voltage_finish_mode(cdwindow):
+    def seq_set_voltage_finish_mode(self):
         global cd_voltage_finish_mode
-        if cdwindow.sequence_voltage_finish_time_radio.isChecked():
+        if self.sequence_voltage_finish_time_radio.isChecked():
             cd_voltage_finish_mode = 0
             # print("voltage finish mode", cd_voltage_finish_mode)
-            cdwindow.sequence_voltage_finish_time_entry.setText("")
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setText("")
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setText("")
-            cdwindow.sequence_voltage_finish_time_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_time_entry.setEnabled(True)
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
-        if cdwindow.sequence_voltage_finish_current_radio.isChecked():
+            self.sequence_voltage_finish_time_entry.setText("")
+            self.sequence_voltage_finish_chargecurrent_entry.setText("")
+            self.sequence_voltage_finish_dischargecurrent_entry.setText("")
+            self.sequence_voltage_finish_time_entry.setEnabled(False)
+            self.sequence_voltage_finish_time_entry.setEnabled(True)
+            self.sequence_voltage_finish_chargecurrent_entry.setEnabled(False)
+            self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
+        if self.sequence_voltage_finish_current_radio.isChecked():
             cd_voltage_finish_mode = 1
             # print("voltage finish mode", cd_voltage_finish_mode)
-            cdwindow.sequence_voltage_finish_time_entry.setText("")
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setText("")
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setText("")
-            cdwindow.sequence_voltage_finish_time_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setEnabled(True)
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setEnabled(True)
-        if cdwindow.sequence_voltage_finish_both_radio.isChecked():
+            self.sequence_voltage_finish_time_entry.setText("")
+            self.sequence_voltage_finish_chargecurrent_entry.setText("")
+            self.sequence_voltage_finish_dischargecurrent_entry.setText("")
+            self.sequence_voltage_finish_time_entry.setEnabled(False)
+            self.sequence_voltage_finish_chargecurrent_entry.setEnabled(False)
+            self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(False)
+            self.sequence_voltage_finish_chargecurrent_entry.setEnabled(True)
+            self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(True)
+        if self.sequence_voltage_finish_both_radio.isChecked():
             cd_voltage_finish_mode = 2
             # print("voltage finish mode", cd_voltage_finish_mode)
             # voltage_finish_time_entry.setText("")
             # voltage_finish_current_entry.setText("")
-            cdwindow.sequence_voltage_finish_time_entry.setEnabled(True)
-            cdwindow.sequence_voltage_finish_chargecurrent_entry.setEnabled(True)
-            cdwindow.sequence_voltage_finish_dischargecurrent_entry.setEnabled(True)
+            self.sequence_voltage_finish_time_entry.setEnabled(True)
+            self.sequence_voltage_finish_chargecurrent_entry.setEnabled(True)
+            self.sequence_voltage_finish_dischargecurrent_entry.setEnabled(True)
         else:
             pass
 
@@ -3654,18 +3885,46 @@ class SequenceRate(QtWidgets.QWidget):
         rate_msg_box.addWidget(sequence_rate_params_box)
 
         sequence_rate_button_layout = QtWidgets.QHBoxLayout()
-        sequence_rate_accept_button = QtWidgets.QPushButton("Add")
-        sequence_rate_accept_button.clicked.connect(
+        self.sequence_rate_accept_button = QtWidgets.QPushButton("Add")
+        self.sequence_rate_accept_button.clicked.connect(
             lambda: seq_rate_listing(win.w, sequence_test_list))
-        sequence_rate_cancel_button = QtWidgets.QPushButton("Cancel")
-        sequence_rate_cancel_button.clicked.connect(lambda: self.close())
-        sequence_rate_button_layout.addWidget(sequence_rate_accept_button)
-        sequence_rate_button_layout.addWidget(sequence_rate_cancel_button)
+        self.sequence_rate_cancel_button = QtWidgets.QPushButton("Cancel")
+        self.sequence_rate_cancel_button.clicked.connect(lambda: self.close())
+        sequence_rate_button_layout.addWidget(self.sequence_rate_accept_button)
+        sequence_rate_button_layout.addWidget(self.sequence_rate_cancel_button)
         rate_msg_box.addLayout(sequence_rate_button_layout)
 
         rate_msg_box.setSpacing(6)
         rate_msg_box.setContentsMargins(3, 3, 3, 3)
         self.setLayout(rate_msg_box)
+
+    def seq_list_update(self):
+        global test_sequence, sequence_flag
+        # print("seq_list_update")
+        self.sequence_rate_file_entry.setText(test_sequence[sequence_test_list.currentRow()]['name'])
+        self.sequence_rate_lbound_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['lbound']))
+        self.sequence_rate_ubound_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['ubound']))
+        self.sequence_rate_capacity_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['one_c_current']*1e3))
+        self.sequence_rate_crates_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['crates']).replace('[', '').replace(']', ''))
+        self.sequence_rate_numcycles_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numcycles']))
+        self.sequence_rate_accept_button.setText("Update")
+        self.sequence_rate_accept_button.clicked.disconnect()
+        self.sequence_rate_accept_button.clicked.connect(
+            lambda: self.seq_rate_updateparams())
+        if sequence_flag:
+            self.sequence_rate_accept_button.setEnabled(False)
+
+    def seq_rate_updateparams(self):
+        global test_sequence, rate_parameters
+        if seq_rate_getparams(self) and rate_validate_parameters():
+            # print("seq_rate_updateparams")
+            # print(test_sequence[sequence_test_list.currentRow()])
+            test_sequence[sequence_test_list.currentRow()].update(rate_parameters)
+            # print(test_sequence[sequence_test_list.currentRow()])
+            # print(test_sequence)
+            sequence_test_list.item(sequence_test_list.currentRow()).setText(
+                test_sequence[sequence_test_list.currentRow()]["filename"])
+            self.close()
 # ------------------------------------------------------------------------------------------
 # OCV Parameter Pop-up
 
@@ -3688,18 +3947,43 @@ class SequenceOCP(QtWidgets.QWidget):
         ocp_msg_box.addWidget(sequence_ocp_params_box)
 
         sequence_ocp_button_layout = QtWidgets.QHBoxLayout()
-        sequence_ocp_accept_button = QtWidgets.QPushButton("Add")
-        sequence_ocp_accept_button.clicked.connect(
+        self.sequence_ocp_accept_button = QtWidgets.QPushButton("Add")
+        self.sequence_ocp_accept_button.clicked.connect(
             lambda: seq_ocp_listing(win.w, sequence_test_list))
-        sequence_ocp_cancel_button = QtWidgets.QPushButton("Cancel")
-        sequence_ocp_cancel_button.clicked.connect(lambda: self.close())
-        sequence_ocp_button_layout.addWidget(sequence_ocp_accept_button)
-        sequence_ocp_button_layout.addWidget(sequence_ocp_cancel_button)
+        self.sequence_ocp_cancel_button = QtWidgets.QPushButton("Cancel")
+        self.sequence_ocp_cancel_button.clicked.connect(lambda: self.close())
+        sequence_ocp_button_layout.addWidget(self.sequence_ocp_accept_button)
+        sequence_ocp_button_layout.addWidget(self.sequence_ocp_cancel_button)
         ocp_msg_box.addLayout(sequence_ocp_button_layout)
 
         ocp_msg_box.setSpacing(6)
         ocp_msg_box.setContentsMargins(3, 3, 3, 3)
         self.setLayout(ocp_msg_box)
+
+    def seq_list_update(self):
+        global test_sequence, sequence_flag
+        # print("seq_list_update")
+        self.sequence_ocp_file_entry.setText(test_sequence[sequence_test_list.currentRow()]['name'])
+        self.sequence_ocp_duration_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['duration']))
+        self.sequence_ocp_numsamples_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numsamples']))
+        self.sequence_ocp_accept_button.setText("Update")
+        self.sequence_ocp_accept_button.clicked.disconnect()
+        self.sequence_ocp_accept_button.clicked.connect(
+            lambda: self.seq_ocp_updateparams())
+        if sequence_flag:
+            self.sequence_ocp_accept_button.setEnabled(False)
+
+    def seq_ocp_updateparams(self):
+        global test_sequence, ocp_parameters
+        if seq_ocp_getparams(self):
+            # print("seq_ocp_updateparams")
+            # print(test_sequence[sequence_test_list.currentRow()])
+            test_sequence[sequence_test_list.currentRow()].update(ocp_parameters)
+            # print(test_sequence[sequence_test_list.currentRow()])
+            # print(test_sequence)
+            sequence_test_list.item(sequence_test_list.currentRow()).setText(
+                test_sequence[sequence_test_list.currentRow()]["filename"])
+            self.close()
 # ------------------------------------------------------------------------------------------
 hbox = QtWidgets.QHBoxLayout()
 hbox.addLayout(display_plot_frame)
@@ -3743,13 +4027,13 @@ def periodic_update():  # A state machine is used to determine which functions n
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-if usb_debug_flag:  # TODO: create GUI flag/checkbox
-    # Depending on global flag, toggles debugging of USB features. Setting this up to help diagnose crashes during longer CV tests.
-    # This logging method does not rotate files due to the long run times of our tests, and because the errors flood the output streams
-    # This means that log files can reach several GIGABYTES IN SIZE. Word processors can only open files under 500MB, so it is necessary
-    # to split the file. This is easiest in Linux's command line ->
-    # split -b 200MB filepath
-    # this will split the file (located at filepath) into as many 200MB chunks as necessary
+if usb_debug_flag:
+    '''Depending on global flag, toggles debugging of USB features. Setting this up to help diagnose crashes during longer CV tests.
+    This logging method does not rotate files due to the long run times of our tests, and because the errors flood the output streams
+    This means that log files can reach several GIGABYTES IN SIZE. Word processors can only open files under 500MB, so it is necessary
+    to split the file. This is easiest in Linux's command line ->
+    split -b 200MB filepath
+    this will split the file (located at filepath) into as many 200MB chunks as necessary'''
 
     file_path = os.getcwd()
     os.environ['PYUSB_DEBUG'] = 'debug'
