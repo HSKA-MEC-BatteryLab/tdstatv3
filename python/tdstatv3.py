@@ -70,6 +70,14 @@ time_of_last_adcread = 0.
 adcread_interval = 0.09  # ADC sampling interval (in seconds)
 logging_enabled = False  # Enable logging of potential and current in idle mode (can be adjusted in the GUI)
 pen_color = ['y', 'r', 'g', 'c', 'm', 'w', "#663300", "#666699", "#ff9900", "#339933"]  # graph line color
+#=======================================================================================================================
+'''
+Adjust the size of the graph labels and tick marks
+'''
+axisFont = QtGui.QFont()
+axisFont.setPointSize(12) # tick marks
+axisLabelStyle = {'color': '#FFF', 'font-size': '14pt'}  # axis labels
+#=======================================================================================================================
 cd_voltage_finish_flag = False
 cd_in_finishing = False
 cd_voltage_finish_mode = 0  # Possible Modes for voltage finish
@@ -823,8 +831,8 @@ def idle_init():
         pass  # In case the legend was already removed
     except NameError:
         pass  # In case a legend has never been created
-    plot_frame.setLabel('bottom', 'Sample #', units="")
-    plot_frame.setLabel('left', 'Value', units="")
+    plot_frame.setLabel('bottom', 'Sample #', units="", **axisLabelStyle)
+    plot_frame.setLabel('left', 'Value', units="", **axisLabelStyle)
     legend = plot_frame.addLegend()
     plot_frame.enableAutoRange()
     plot_frame.setXRange(0, 200, update=True)
@@ -1123,13 +1131,18 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tCycle\n"""
             pass
         plot_frame.clear()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'Potential', units="V")
-        plot_frame.setLabel('left', 'Current', units="A")
-        cv_plot_curve = plot_frame.plot(pen=pen_color[0])  # Plot first cycle CV in yellow, changes with cycle number
+        plot_frame.setLabel('bottom', 'Potential', units="V", **axisLabelStyle)
+        plot_frame.setLabel('left', 'Current', units="A", **axisLabelStyle)
+        # original ====================
+        # cv_plot_curve = plot_frame.plot(pen=pen_color[0])  # Plot first cycle CV in yellow
+        # ====================
+        cv_plot_curve = []
+        cv_plot_curve.append(plot_frame.plot(pen=pen_color[0]))
         log_message("CV measurement started. Saving to: %s" % cv_parameters['filename'])
         state = States.Measuring_CV
         skipcounter = 2  # Skip first two data points to suppress artifacts
         cv_parameters['starttime'] = timeit.default_timer()
+
 
 
 def seq_cv_start():
@@ -1194,9 +1207,13 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tCycle\n"""
             pass
         plot_frame.clear()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'Potential', units="V")
-        plot_frame.setLabel('left', 'Current', units="A")
-        cv_plot_curve = plot_frame.plot(pen=pen_color[0])  # Plot first cycle CV in yellow, changes with cycle number
+        plot_frame.setLabel('bottom', 'Potential', units="V", **axisLabelStyle)
+        plot_frame.setLabel('left', 'Current', units="A", **axisLabelStyle)
+        # original =-==================
+        # cv_plot_curve = plot_frame.plot(pen=pen_color[0])  # Plot first cycle CV in yellow
+        # -============================
+        cv_plot_curve = []
+        cv_plot_curve.append(plot_frame.plot(pen=pen_color[0]))
         log_message("CV measurement started. Saving to: %s" % cv_parameters['filename'])
         state = States.Measuring_CV
         skipcounter = 2  # Skip first two data points to suppress artifacts
@@ -1205,7 +1222,7 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tCycle\n"""
 
 def cv_update():
     """Add a new data point to the CV measurement (should be called regularly)."""
-    global state, skipcounter
+    global state, skipcounter, cv_cycle
     elapsed_time = timeit.default_timer() - cv_parameters['starttime']
     cv_output = cv_sweep(elapsed_time, cv_parameters['startpot'], cv_parameters['stoppot'], cv_parameters['ubound'],
                          cv_parameters['lbound'], cv_parameters['scanrate'], cv_parameters['numcycles'])
@@ -1226,9 +1243,29 @@ def cv_update():
                     f"{cv_current_data.averagebuffer[-1]:e}\t"
                     f"{cv_cycle}\n"
                 )
-                cv_plot_curve.pen = pen_color[cv_cycle % len(pen_color)]  # Change color of CV curve
-                cv_plot_curve.setData(cv_potential_data.averagebuffer,
-                                      cv_current_data.averagebuffer)  # Update the graph
+                # original ====================
+                # cv_plot_curve.setData(cv_potential_data.averagebuffer, cv_current_data.averagebuffer)  # Update the graph
+                # =============================
+                try:
+                    # print(cv_cycle)
+                    cv_plot_curve[cv_cycle].setData(
+                        cv_potential_data.averagebuffer,
+                        cv_current_data.averagebuffer
+                    )
+                except IndexError:
+                    # print("IndexError")
+                    cv_plot_curve.append(plot_frame.plot(pen=pen_color[cv_cycle % len(pen_color)]))
+                    temp_time = cv_time_data.averagebuffer[-2]
+                    temp_potential = cv_potential_data.averagebuffer[-2]
+                    temp_current = cv_current_data.averagebuffer[-2]
+                    for data in [cv_time_data, cv_potential_data,
+                                 cv_current_data]:  # Clear average buffers to prepare them for the next cycle
+                        data.clear()
+                    for i in range(0, cv_parameters['numsamples']):
+                        cv_time_data.add_sample(temp_time)
+                        cv_potential_data.add_sample(temp_potential)
+                        cv_current_data.add_sample(temp_current)
+
             skipcounter = auto_current_range()  # Update the graph
         else:  # Wait until the required number of data points is skipped
             skipcounter -= 1
@@ -1294,8 +1331,8 @@ def cv_preview():
             pass
         plot_frame.clear()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'Time', units='s')
-        plot_frame.setLabel('left', 'Potential', units='V')
+        plot_frame.setLabel('bottom', 'Time', units='s', **axisLabelStyle)
+        plot_frame.setLabel('left', 'Potential', units='V', **axisLabelStyle)
         plot_frame.plot(time_arr, potential_arr, pen='g')
         preview_cancel_button.show()
         state = States.Stationary_Graph  # Keep displaying the CV preview until the user clicks a button
@@ -1475,8 +1512,8 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tHalf-Cycle\n"""
             pass
         plot_frame.clear()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'Inserted/extracted charge', units="Ah")
-        plot_frame.setLabel('left', 'Potential', units="V")
+        plot_frame.setLabel('bottom', 'Inserted/extracted charge', units="Ah", **axisLabelStyle)
+        plot_frame.setLabel('left', 'Potential', units="V", **axisLabelStyle)
         cd_plot_curves.append(plot_frame.plot(pen=pen_color[0]))  # Draw potential as a function of charge in yellow
         log_message("Charge/discharge measurement started. Saving to: %s" % cd_parameters['filename'])
         cd_current_cycle_entry.setText("%d" % cd_currentcycle)  # Indicate the current cycle number
@@ -1531,8 +1568,8 @@ Elapsed_Time(s)\tPotential(V)\tCurrent(A)\tHalf-Cycle\n"""
             pass
         plot_frame.clear()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'Inserted/extracted charge', units="Ah")
-        plot_frame.setLabel('left', 'Potential', units="V")
+        plot_frame.setLabel('bottom', 'Inserted/extracted charge', units="Ah", **axisLabelStyle)
+        plot_frame.setLabel('left', 'Potential', units="V", **axisLabelStyle)
         cd_plot_curves.append(plot_frame.plot(pen=pen_color[0]))  # Draw potential as a function of charge in yellow
         log_message("Charge/discharge measurement started. Saving to: %s" % cd_parameters['filename'])
         cd_current_cycle_entry.setText("%d" % cd_currentcycle)  # Indicate the current cycle number
@@ -1870,8 +1907,8 @@ def rate_start():
         plot_frame.clear()
         legend = plot_frame.addLegend()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'C-rate')
-        plot_frame.setLabel('left', 'Inserted/extracted charge', units="Ah")
+        plot_frame.setLabel('bottom', 'C-rate', **axisLabelStyle)
+        plot_frame.setLabel('left', 'Inserted/extracted charge', units="Ah", **axisLabelStyle)
         rate_plot_scatter_chg = plot_frame.plot(symbol='o', pen=None, symbolPen='r', symbolBrush='r',
                                                 name='Charge')  # Plot charge capacity as a function of C-rate with red circles
         rate_plot_scatter_dis = plot_frame.plot(symbol='o', pen=None, symbolPen=(100, 100, 255),
@@ -1923,8 +1960,8 @@ def seq_rate_start():
         plot_frame.clear()
         legend = plot_frame.addLegend()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'C-rate')
-        plot_frame.setLabel('left', 'Inserted/extracted charge', units="Ah")
+        plot_frame.setLabel('bottom', 'C-rate', **axisLabelStyle)
+        plot_frame.setLabel('left', 'Inserted/extracted charge', units="Ah", **axisLabelStyle)
         rate_plot_scatter_chg = plot_frame.plot(symbol='o', pen=None, symbolPen='r', symbolBrush='r',
                                                 name='Charge')  # Plot charge capacity as a function of C-rate with red circles
         rate_plot_scatter_dis = plot_frame.plot(symbol='o', pen=None, symbolPen=(100, 100, 255),
@@ -2115,8 +2152,8 @@ Elapsed_Time\tPotential(V)\tCurrent(A)\tTemperature(Deg C)\n""")
             pass
         plot_frame.clear()
         plot_frame.enableAutoRange()
-        plot_frame.setLabel('bottom', 'Time', units="s")
-        plot_frame.setLabel('left', 'Temperature', units="\u2103")
+        plot_frame.setLabel('bottom', 'Time', units="s", **axisLabelStyle)
+        plot_frame.setLabel('left', 'Temperature', units="\u2103", **axisLabelStyle)
         temp_plot_curves.append(plot_frame.plot(pen=pen_color[0]))  # Draw potential as a function of charge in yellow
         log_message("Temperature measurement started. Saving to: %s" % temp_parameters['filename'])
         state = States.Measuring_Temp
@@ -2222,8 +2259,8 @@ def ocp_start():
         plot_frame.clear()
         plot_frame.enableAutoRange()
         # plot_frame.setXRange(0, 30, update=True)
-        plot_frame.setLabel('bottom', 'Time', units="S")
-        plot_frame.setLabel('left', 'Voltage', units="V")
+        plot_frame.setLabel('bottom', 'Time', units="S", **axisLabelStyle)
+        plot_frame.setLabel('left', 'Voltage', units="V", **axisLabelStyle)
         ocp_plot_curve = plot_frame.plot(pen=pen_color[0])  # Plot first cycle CV in yellow, changes with cycle number
         log_message("OCP measurement started. Saving to: %s" % ocp_parameters['filename'])
         state = States.Measuring_OCP
@@ -2311,8 +2348,8 @@ def seq_ocp_start():
         plot_frame.clear()
         plot_frame.enableAutoRange()
         # plot_frame.setXRange(0, 30, update=True)
-        plot_frame.setLabel('bottom', 'Time', units="S")
-        plot_frame.setLabel('left', 'Voltage', units="V")
+        plot_frame.setLabel('bottom', 'Time', units="S", **axisLabelStyle)
+        plot_frame.setLabel('left', 'Voltage', units="V", **axisLabelStyle)
         ocp_plot_curve = plot_frame.plot(pen=pen_color[0])  # Plot first cycle CV in yellow, changes with cycle number
         log_message("OCP measurement started. Saving to: %s" % ocp_parameters['filename'])
         state = States.Measuring_OCP
@@ -2334,6 +2371,18 @@ def sequence_start():
         log_message("Sequence finished.")
         state = States.Stationary_Graph  # Keep displaying the last plot until the user clicks a button
         preview_cancel_button.show()
+        if not sequence_flag:
+            sequence_template_file_entry.setEnabled(True)
+            sequence_template_file_choose_button.setEnabled(True)
+            sequence_template_load_button.setEnabled(True)
+            sequence_template_save_button.setEnabled(True)
+
+            sequence_test_add_button.setEnabled(True)
+            sequence_test_remove_button.setEnabled(True)
+            sequence_cvradio_entry.setEnabled(True)
+            sequence_cdradio_entry.setEnabled(True)
+            sequence_rateradio_entry.setEnabled(True)
+            sequence_ocvradio_entry.setEnabled(True)
         return
     else:
         log_message("Sequence " + str(sequence_index + 1) + " of " + str(len(test_sequence)) + " started")
@@ -2363,9 +2412,13 @@ def sequence_start():
         cd_parameters['name'] = test_sequence[sequence_index]['name']
         cd_parameters['filename'] = cd_parameters['path'] + "/" + cd_parameters['name'] + ".csv"
         cd_voltage_finish_flag = test_sequence[sequence_index]['voltage_finish_flag']
-        cd_voltage_finish_mode = test_sequence[sequence_index]['voltage_finish_mode']
         cd_parameters['voltage_finish_flag'] = test_sequence[sequence_index]['voltage_finish_flag']
-        cd_parameters['voltage_finish_mode'] = test_sequence[sequence_index]['voltage_finish_mode']
+        if cd_voltage_finish_flag:
+            cd_voltage_finish_mode = test_sequence[sequence_index]['voltage_finish_mode']
+            cd_parameters['voltage_finish_mode'] = test_sequence[sequence_index]['voltage_finish_mode']
+        else:
+            cd_voltage_finish_mode = 0
+            cd_parameters['voltage_finish_mode'] = 0
         if cd_parameters['voltage_finish_flag']:
             if cd_parameters['voltage_finish_mode'] == 0:
                 cd_parameters['finish_duration'] = test_sequence[sequence_index]['finish_duration']
@@ -2497,6 +2550,8 @@ mode_display_frame.addWidget(control_mode_monitor_box)
 mode_display_frame.addWidget(current_range_monitor_box)
 pyqtgraph.setConfigOptions(foreground="#e5e5e5", background="#00304f")
 plot_frame = pyqtgraph.PlotWidget()
+plot_frame.plotItem.getAxis('left').setStyle(tickFont=axisFont)
+plot_frame.plotItem.getAxis('bottom').setStyle(tickFont=axisFont)
 
 display_plot_frame = QtWidgets.QVBoxLayout()
 display_plot_frame.setSpacing(0)
@@ -3123,12 +3178,20 @@ sequence_vbox.addWidget(sequence_stop_button)
 sequence_vbox.setSpacing(6)
 sequence_vbox.setContentsMargins(3, 3, 3, 3)
 
-sequence_info_box = QtWidgets.QGroupBox(title="Information", flat=False)
+sequence_info_box = QtWidgets.QGroupBox(title="Instructions", flat=False)
 format_box_for_parameter(sequence_info_box)
 sequence_info_layout = QtWidgets.QVBoxLayout()
 sequence_info_box.setLayout(sequence_info_layout)
-sequence_current_crate_entry = make_label_entry(sequence_info_layout, "Current C-rate")
-sequence_current_crate_entry.setReadOnly(True)
+sequence_current_crate_entry = QtWidgets.QLabel(text="1) Select directory for data output\n"
+                                                     "2) (Optional) Open existing template, click Load template sequence to import\n"
+                                                     "3) Add tests to sequence by choosing test type and clicking Add Test\n"
+                                                    "4) (Optional) Edit tests by double-clicking, drag-and-dropping order\n"
+                                                "5) Click Confirm Test Order to save sequence\n"
+                                                "6) Click Start Test Sequence to begin"
+                                                )
+sequence_info_layout.addWidget(sequence_current_crate_entry)
+# sequence_current_crate_entry = make_label_entry(sequence_info_layout, "Current C-rate")
+# sequence_current_crate_entry.setReadOnly(True)
 
 sequence_info_layout.setSpacing(6)
 sequence_info_layout.setContentsMargins(3, 10, 3, 3)
@@ -3457,18 +3520,18 @@ def seq_stop_all():
         rate_stop(interrupted=True)
     elif state == States.Measuring_OCP:
         ocp_stop(interrupted=True)
-    # if not sequence_flag:
-    #     sequence_template_file_entry.setEnabled(True)
-    #     sequence_template_file_choose_button.setEnabled(True)
-    #     sequence_template_load_button.setEnabled(True)
-    #     sequence_template_save_button.setEnabled(True)
-    #
-    #     sequence_test_add_button.setEnabled(True)
-    #     sequence_test_remove_button.setEnabled(True)
-    #     sequence_cvradio_entry.setEnabled(True)
-    #     sequence_cdradio_entry.setEnabled(True)
-    #     sequence_rateradio_entry.setEnabled(True)
-    #     sequence_ocvradio_entry.setEnabled(True)
+    if not sequence_flag:
+        sequence_template_file_entry.setEnabled(True)
+        sequence_template_file_choose_button.setEnabled(True)
+        sequence_template_load_button.setEnabled(True)
+        sequence_template_save_button.setEnabled(True)
+
+        sequence_test_add_button.setEnabled(True)
+        sequence_test_remove_button.setEnabled(True)
+        sequence_cvradio_entry.setEnabled(True)
+        sequence_cdradio_entry.setEnabled(True)
+        sequence_rateradio_entry.setEnabled(True)
+        sequence_ocvradio_entry.setEnabled(True)
 
 
 def seq_template_load():
@@ -3573,7 +3636,7 @@ class SequenceCV(QtWidgets.QWidget):
         self.sequence_cv_ubound_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['ubound']))
         self.sequence_cv_startpot_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['startpot']))
         self.sequence_cv_stoppot_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['stoppot']))
-        self.sequence_cv_scanrate_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['scanrate']))
+        self.sequence_cv_scanrate_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['scanrate']*1e3))
         self.sequence_cv_numcycles_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numcycles']))
         self.sequence_cv_numsamples_entry.setText(str(test_sequence[sequence_test_list.currentRow()]['numsamples']))
         if test_sequence[sequence_test_list.currentRow()]['auto_ocv'] == True:
